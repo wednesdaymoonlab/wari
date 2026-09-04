@@ -49,6 +49,7 @@ still reporting download errors and retries.
 ```bash
 ./wari php --version
 ./wari php artisan migrate
+./wari php -S 127.0.0.1:8000 -t public
 ./wari composer install
 ./wari composer require vendor/package
 ./wari serve
@@ -69,16 +70,30 @@ wrapper for advanced commands:
 ```
 
 The dispatcher locates `.wari/` relative to itself, so the whole project
-remains relocatable. The PHP wrapper preserves its caller's working directory
-so Composer package scripts can resolve relative paths such as `artisan`. The
-Composer wrapper temporarily prepends `.wari/` to `PATH` and sets `PHP_BINARY`
-to `.wari/php`, which makes child scripts use the same project-local runtime.
+remains relocatable. The PHP wrapper preserves its caller's working directory,
+sets `PHP_BINARY` to itself, and prepends `.wari/` to `PATH`. Composer package
+scripts and PHP programs that start child PHP processes therefore keep using
+the same project-local runtime and can resolve relative paths such as
+`artisan`.
 
 FrankenPHP `php-cli` does not support every native PHP CLI option. Wari removes
 `-d value` and `-dvalue` arguments so Composer remains compatible. Composer
 child processes do this silently; direct `wari php` calls warn for each ignored
 setting. Use `./wari php -m` to inspect extensions built into the selected
 FrankenPHP binary. Wari v1 does not install extensions.
+
+Wari translates PHP's common development-server form,
+`php -S <address> [-t <document-root>] [router.php]`, to FrankenPHP's
+`php-server`. The optional router is treated as a compatibility hint rather
+than executed directly; FrankenPHP serves existing files and falls back to the
+document root's `index.php`. Projects whose router contains custom behavior
+beyond that front-controller pattern should use a project-specific Caddyfile
+through `./wari frankenphp run --config Caddyfile`.
+
+Some process managers remove `HOME` from server subprocesses. Wari keeps Caddy
+data project-local under `.wari/runtime/xdg/` in that case. Caddy on macOS may
+still print a harmless `$HOME is not defined` configuration-directory warning;
+Wari does not invent or overwrite a home directory.
 
 ## Supported platforms
 

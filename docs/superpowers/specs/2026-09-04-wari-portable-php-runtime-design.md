@@ -221,7 +221,9 @@ native PHP CLI modes, Wari routes `--version`/`-v`, `-r`, `-m`, and `-i`
 through the internal `runtime/php-proxy.php` compatibility helper. Normal PHP
 script paths and Composer continue to execute directly through `php-cli`. The
 PHP wrapper preserves the caller's working directory, including the package
-directory selected by Composer while it executes project scripts.
+directory selected by Composer while it executes project scripts. It also sets
+`PHP_BINARY` to itself and prepends `.wari/` to `PATH`, ensuring that PHP
+programs which start PHP subprocesses continue to use the portable runtime.
 
 Examples:
 
@@ -230,6 +232,7 @@ Examples:
 ./wari php script.php
 ./wari php artisan migrate
 ./wari php -r 'echo PHP_VERSION;'
+./wari php -S 127.0.0.1:8000 -t public
 ```
 
 `./wari php version` is not a supported version command because native PHP
@@ -242,6 +245,23 @@ silently because Composer adds these options automatically; direct `wari php`
 calls print a warning identifying each ignored setting so users do not assume
 the setting was applied. A bare `-d` without a value is an input error. All
 other arguments preserve their original order and boundaries.
+
+The wrapper translates the common native development-server grammar
+`-S <address> [-t <document-root>] [router.php]` to `php-server --listen
+<address> --root <document-root>`. Without `-t`, the caller's working directory
+is the document root. A relative `-t` path is resolved from that directory. The
+optional router argument is consumed as a compatibility hint but is not
+executed: FrankenPHP serves existing files and falls back to `index.php`.
+Projects that depend on arbitrary router-script behavior require a custom
+Caddyfile through the raw FrankenPHP command. Missing values, nonexistent
+document roots, or more than one router argument are input errors.
+
+When server mode starts without `HOME`, Wari supplies project-local
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` directories under `.wari/runtime/` if
+the caller did not provide them. This keeps Caddy data project-local without
+inventing or overwriting the caller's home-directory setting. On macOS, Caddy
+may still emit a harmless warning while resolving its configuration directory
+because Go's platform lookup requires `HOME` there.
 
 ### 7.3 `wari composer`
 

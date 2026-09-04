@@ -35,7 +35,7 @@ mkdir -p "$WARI/runtime" "$PROJECT/nested/path"
     printf '%s\n' '  printf '\''arg%s=<%s>\n'\'' "$index" "$argument" >>"$FAKE_CAPTURE"'
     printf '%s\n' '  index=$((index + 1))'
     printf '%s\n' 'done'
-    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" >>"$FAKE_CAPTURE"'
+    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\nxdg_config_home=%s\nxdg_data_home=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" "${XDG_CONFIG_HOME-}" "${XDG_DATA_HOME-}" >>"$FAKE_CAPTURE"'
     printf '%s\n' 'exit "${FAKE_EXIT_CODE:-0}"'
 } >"$WARI/runtime/frankenphp"
 chmod 755 "$WARI/runtime/frankenphp"
@@ -62,6 +62,8 @@ assert_contains "$PHP_CAPTURE" 'arg0=<php-cli>' 'PHP wrapper selects php-cli'
 assert_contains "$PHP_CAPTURE" 'arg1=<alpha>' 'PHP wrapper forwards first argument'
 assert_contains "$PHP_CAPTURE" 'arg2=<two words>' 'PHP wrapper preserves spaces'
 assert_contains "$PHP_CAPTURE" 'arg3=<*>' 'PHP wrapper does not expand glob arguments'
+assert_contains "$PHP_CAPTURE" "php_binary=$WARI/php" 'PHP wrapper exports itself as PHP_BINARY for child processes'
+assert_contains "$PHP_CAPTURE" "path=$WARI:" 'PHP wrapper prepends itself to PATH for child processes'
 
 FAKE_CAPTURE="$CAPTURE" "$WARI/php" --version
 VERSION_CAPTURE="$(<"$CAPTURE")"
@@ -93,6 +95,33 @@ assert_fails 'PHP wrapper rejects bare -d' env FAKE_CAPTURE="$CAPTURE" "$WARI/ph
 
 FAKE_CAPTURE="$CAPTURE" WARI_COMPOSER_CONTEXT=1 "$WARI/php" -d memory_limit=1536M -ddisplay_errors=1 script.php 2>"$WRAPPER_TMP/composer-php-warning"
 assert_eq '' "$(<"$WRAPPER_TMP/composer-php-warning")" 'PHP wrapper suppresses unsupported -d warnings in Composer context'
+
+(
+    cd "$PROJECT/nested/path"
+    unset HOME XDG_CONFIG_HOME XDG_DATA_HOME
+    FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S 127.0.0.1:8080 router.php
+)
+SERVER_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$SERVER_CAPTURE" 'arg0=<php-server>' 'PHP -S selects FrankenPHP server mode'
+assert_contains "$SERVER_CAPTURE" 'arg1=<--listen>' 'PHP -S supplies listen option'
+assert_contains "$SERVER_CAPTURE" 'arg2=<127.0.0.1:8080>' 'PHP -S preserves listen address'
+assert_contains "$SERVER_CAPTURE" 'arg3=<--root>' 'PHP -S supplies document root option'
+assert_contains "$SERVER_CAPTURE" "arg4=<$PROJECT/nested/path>" 'PHP -S defaults document root to caller directory'
+assert_contains "$SERVER_CAPTURE" 'argc=5' 'PHP -S consumes optional router compatibility hint'
+assert_contains "$SERVER_CAPTURE" "xdg_config_home=$WARI/runtime/xdg/config" 'PHP -S supplies local XDG config when HOME is unavailable'
+assert_contains "$SERVER_CAPTURE" "xdg_data_home=$WARI/runtime/xdg/data" 'PHP -S supplies local XDG data when HOME is unavailable'
+
+mkdir -p "$PROJECT/nested/path/custom public"
+(
+    cd "$PROJECT/nested/path"
+    FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S localhost:9090 -t 'custom public' router.php
+)
+SERVER_DOCROOT_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$SERVER_DOCROOT_CAPTURE" "arg4=<$PROJECT/nested/path/custom public>" 'PHP -S resolves custom document root from caller directory'
+assert_fails 'PHP -S rejects a missing listen address' env FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S
+assert_fails 'PHP -S rejects -t without a document root' env FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S localhost:8080 -t
+assert_fails 'PHP -S rejects a document root that does not exist' env FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S localhost:8080 -t missing
+assert_fails 'PHP -S rejects more than one router argument' env FAKE_CAPTURE="$CAPTURE" "$WARI/php" -S localhost:8080 router.php extra.php
 
 FAKE_CAPTURE="$CAPTURE" "$WARI/composer" require 'vendor/package'
 COMPOSER_CAPTURE="$(<"$CAPTURE")"

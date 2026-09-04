@@ -671,6 +671,12 @@ set -Eeuo pipefail
 
 WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
+export PHP_BINARY="$WARI_DIR/php"
+case "$PATH" in
+    "$WARI_DIR"|"$WARI_DIR":*) ;;
+    *) export PATH="$WARI_DIR:$PATH" ;;
+esac
+
 arguments=("$@")
 filtered_arguments=()
 index=0
@@ -703,6 +709,54 @@ while ((index < ${#arguments[@]})); do
 done
 
 case "${filtered_arguments[0]-}" in
+    -S)
+        if ((${#filtered_arguments[@]} < 2)) || [[ -z "${filtered_arguments[1]}" ]]; then
+            printf 'Error: -S requires a listen address.\n' >&2
+            exit 2
+        fi
+
+        listen_address="${filtered_arguments[1]}"
+        document_root="$PWD"
+        server_index=2
+
+        if [[ "${filtered_arguments[$server_index]-}" == -t ]]; then
+            if ((server_index + 1 >= ${#filtered_arguments[@]})); then
+                printf 'Error: -t requires a document root.\n' >&2
+                exit 2
+            fi
+
+            document_root_argument="${filtered_arguments[$((server_index + 1))]}"
+            if [[ ! -d "$document_root_argument" ]]; then
+                printf 'Error: PHP server document root does not exist: %s\n' "$document_root_argument" >&2
+                exit 2
+            fi
+
+            document_root="$(CDPATH= cd -- "$document_root_argument" && pwd -P)"
+            server_index=$((server_index + 2))
+        fi
+
+        if ((${#filtered_arguments[@]} - server_index > 1)); then
+            printf 'Error: PHP server accepts at most one router script.\n' >&2
+            exit 2
+        fi
+
+        if [[ -z "${HOME:-}" ]]; then
+            if [[ -z "${XDG_CONFIG_HOME:-}" ]]; then
+                XDG_CONFIG_HOME="$WARI_DIR/runtime/xdg/config"
+                export XDG_CONFIG_HOME
+                mkdir -p -- "$XDG_CONFIG_HOME"
+            fi
+            if [[ -z "${XDG_DATA_HOME:-}" ]]; then
+                XDG_DATA_HOME="$WARI_DIR/runtime/xdg/data"
+                export XDG_DATA_HOME
+                mkdir -p -- "$XDG_DATA_HOME"
+            fi
+        fi
+
+        exec "$WARI_DIR/runtime/frankenphp" php-server \
+            --listen "$listen_address" \
+            --root "$document_root"
+        ;;
     --version|-v)
         exec "$WARI_DIR/runtime/frankenphp" php-cli \
             "$WARI_DIR/runtime/php-proxy.php" version
