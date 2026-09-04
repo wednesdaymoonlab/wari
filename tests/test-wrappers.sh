@@ -20,7 +20,8 @@ WRAPPER_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wari-wrapper-test.XXXXXX")"
 WRAPPER_TMP="$(CDPATH= cd -- "$WRAPPER_TMP" && pwd -P)"
 trap 'rm -rf -- "$WRAPPER_TMP"' EXIT
 PROJECT="$WRAPPER_TMP/project with spaces"
-WARI="$PROJECT/wari"
+WARI="$PROJECT/.wari"
+DISPATCHER="$PROJECT/wari"
 CAPTURE="$WRAPPER_TMP/capture"
 mkdir -p "$WARI/runtime" "$PROJECT/nested/path"
 
@@ -41,6 +42,15 @@ chmod 755 "$WARI/runtime/frankenphp"
 printf 'fake composer' >"$WARI/runtime/composer.phar"
 
 generate_wrappers "$WARI"
+
+if ! declare -F generate_dispatcher >/dev/null 2>&1; then
+    fail 'dispatcher generator exists'
+    finish_tests
+    exit $?
+fi
+
+generate_dispatcher "$WARI"
+mv -- "$WARI/wari" "$DISPATCHER"
 
 (
     cd "$PROJECT/nested/path"
@@ -108,5 +118,69 @@ FAKE_CAPTURE="$CAPTURE" FAKE_EXIT_CODE=17 "$WARI/php" script.php >/dev/null 2>&1
 WRAPPER_STATUS=$?
 set -e
 assert_eq '17' "$WRAPPER_STATUS" 'PHP wrapper forwards runtime exit code'
+
+(
+    cd "$PROJECT/nested/path"
+    FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" php alpha 'two words' '*'
+)
+DISPATCH_PHP_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$DISPATCH_PHP_CAPTURE" "cwd=$PROJECT" 'dispatcher PHP command changes to project root'
+assert_contains "$DISPATCH_PHP_CAPTURE" 'arg1=<alpha>' 'dispatcher PHP command forwards arguments'
+assert_contains "$DISPATCH_PHP_CAPTURE" 'arg2=<two words>' 'dispatcher preserves spaces'
+assert_contains "$DISPATCH_PHP_CAPTURE" 'arg3=<*>' 'dispatcher does not expand glob arguments'
+
+FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" composer require 'vendor/package'
+DISPATCH_COMPOSER_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$DISPATCH_COMPOSER_CAPTURE" "arg1=<$WARI/runtime/composer.phar>" 'dispatcher Composer command uses hidden runtime'
+assert_contains "$DISPATCH_COMPOSER_CAPTURE" 'arg2=<require>' 'dispatcher Composer command forwards arguments'
+assert_contains "$DISPATCH_COMPOSER_CAPTURE" "php_binary=$WARI/php" 'dispatcher Composer command exports hidden PHP_BINARY'
+assert_contains "$DISPATCH_COMPOSER_CAPTURE" "path=$WARI:" 'dispatcher Composer command prepends hidden runtime to PATH'
+
+FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" serve
+DISPATCH_SERVE_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$DISPATCH_SERVE_CAPTURE" 'arg0=<php-server>' 'dispatcher serve command selects PHP server'
+
+FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" frankenphp run --config 'My Caddyfile'
+DISPATCH_RAW_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$DISPATCH_RAW_CAPTURE" 'arg0=<run>' 'dispatcher FrankenPHP command forwards command'
+assert_contains "$DISPATCH_RAW_CAPTURE" 'arg2=<My Caddyfile>' 'dispatcher FrankenPHP command preserves config path'
+
+for help_argument in '' help --help -h; do
+    if [[ -n "$help_argument" ]]; then
+        HELP_OUTPUT="$("$DISPATCHER" "$help_argument")"
+    else
+        HELP_OUTPUT="$("$DISPATCHER")"
+    fi
+    assert_contains "$HELP_OUTPUT" 'php' "dispatcher $help_argument help lists PHP"
+    assert_contains "$HELP_OUTPUT" 'composer' "dispatcher $help_argument help lists Composer"
+    assert_contains "$HELP_OUTPUT" 'serve' "dispatcher $help_argument help lists serve"
+    assert_contains "$HELP_OUTPUT" 'frankenphp' "dispatcher $help_argument help lists FrankenPHP"
+done
+
+printf 'not-invoked' >"$CAPTURE"
+set +e
+UNKNOWN_OUTPUT="$(FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" unknown 2>&1)"
+UNKNOWN_STATUS=$?
+set -e
+assert_eq '1' "$UNKNOWN_STATUS" 'dispatcher rejects unknown command'
+assert_contains "$UNKNOWN_OUTPUT" 'Unknown Wari command: unknown' 'dispatcher identifies unknown command'
+assert_contains "$UNKNOWN_OUTPUT" 'Usage:' 'dispatcher prints usage for unknown command'
+assert_eq 'not-invoked' "$(<"$CAPTURE")" 'dispatcher does not invoke runtime for unknown command'
+
+ORPHAN_PROJECT="$WRAPPER_TMP/orphan"
+mkdir -p "$ORPHAN_PROJECT"
+cp "$DISPATCHER" "$ORPHAN_PROJECT/wari"
+set +e
+MISSING_OUTPUT="$("$ORPHAN_PROJECT/wari" php --version 2>&1)"
+MISSING_STATUS=$?
+set -e
+assert_eq '1' "$MISSING_STATUS" 'dispatcher rejects missing hidden runtime'
+assert_contains "$MISSING_OUTPUT" 'Wari runtime directory does not exist' 'dispatcher explains missing hidden runtime'
+
+set +e
+FAKE_CAPTURE="$CAPTURE" FAKE_EXIT_CODE=17 "$DISPATCHER" php script.php >/dev/null 2>&1
+DISPATCH_STATUS=$?
+set -e
+assert_eq '17' "$DISPATCH_STATUS" 'dispatcher forwards delegated exit code'
 
 finish_tests

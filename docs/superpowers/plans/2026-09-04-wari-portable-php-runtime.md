@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone Bash installer that creates a verified, project-local FrankenPHP and Composer runtime with PHP, Composer, development-server, and raw FrankenPHP wrappers.
+**Goal:** Build a standalone Bash installer that creates a verified, hidden project-local FrankenPHP and Composer runtime and exposes it through one `./wari <command>` dispatcher.
 
-**Architecture:** `install.sh` is both the distributable installer and a sourceable library of focused Bash functions guarded by a `main` check. It resolves official GitHub release metadata, stages and verifies downloads atomically, generates relocatable wrappers, smoke-tests them, and only then renames staging to `wari/`. Offline tests exercise pure functions and mocked external commands; a separate opt-in test downloads real artifacts.
+**Architecture:** `install.sh` is both the distributable installer and a sourceable library of focused Bash functions guarded by a `main` check. It resolves official GitHub release metadata, builds and verifies the runtime in staging, publishes that directory as `.wari/`, and publishes the root `wari` dispatcher last. Internal wrappers remain in `.wari/` for Composer child-process compatibility; offline tests exercise the dispatcher and transaction cleanup, while an opt-in test downloads real artifacts.
 
 **Tech Stack:** Bash 3.2+, curl, POSIX userland tools, SHA-256/SHA-384 utilities, FrankenPHP standalone binary, Composer installer, GitHub Actions.
 
@@ -18,11 +18,20 @@
 - Composer is latest stable; do not implement Composer pinning or self-update.
 - Do not require system PHP, Composer, jq, GitHub CLI, Docker, sudo, or a package manager.
 - Read interactive input from `/dev/tty`; noninteractive installation requires `--yes`.
-- Stop before network access if `./wari` exists, and never overwrite it.
+- Stop before network access if either `./wari` or `./.wari` exists, including a symbolic link, and never overwrite either path.
 - Verify every FrankenPHP SHA-256 digest and the Composer installer SHA-384 checksum; there is no verification bypass.
 - Keep the public `serve` command fixed at `127.0.0.1:8000` with `<project>/public` as root.
 - Support Bash 3.2; do not use associative arrays, `mapfile`, namerefs, or `${value,,}`.
 - Never run `git add`, `git commit`, or `git push`; leave every change unstaged for user review.
+
+## Revision note
+
+Tasks 1-6 describe the implemented baseline and retain its original
+`./wari/<command>` examples for historical context. Task 7 is the only pending
+implementation work and supersedes every earlier final-layout, invocation,
+preflight, publication, smoke-test, and documentation path. The approved final
+public interface is exclusively `./wari <command>` with runtime state in
+`./.wari/`.
 
 ## File map
 
@@ -496,3 +505,304 @@ Expected: all offline and live tests pass. Also run `git diff --check` and confi
 - [ ] **Step 7: Final user review handoff**
 
 Report exact commands and results, supported platform checks actually exercised, untested matrix entries, live download version/digest, and all changed files. Leave Git staging empty and do not commit or push; the user performs all Git operations.
+
+---
+
+### Task 7: Hidden runtime and root command dispatcher
+
+**Files:**
+
+- Modify: `install.sh`
+- Modify: `tests/test-installer.sh`
+- Modify: `tests/test-wrappers.sh`
+- Modify: `tests/test-live-install.sh`
+- Modify: `README.md`
+- Modify: `docs/superpowers/specs/2026-09-04-wari-portable-php-runtime-design.md`
+
+**Interfaces:**
+
+- Consumes: existing `generate_wrappers(wari_dir)`, `run_smoke_checks(wari_dir)`, staging safety functions, and wrapper contracts.
+- Produces: `generate_dispatcher(wari_dir)`, `publish_install(staging, project_root)`, `run_public_smoke_checks(project_root)`, globals `PUBLISHED_RUNTIME` and `PUBLISHED_DISPATCHER`, hidden runtime `<project>/.wari/`, and executable dispatcher `<project>/wari`.
+- Public commands: `./wari php`, `./wari composer`, `./wari serve`, `./wari frankenphp`, `./wari help`, `./wari --help`, and `./wari -h`.
+- Breaking change: remove support and documentation for `./wari/php`, `./wari/composer`, `./wari/serve`, and `./wari/frankenphp`.
+
+- [x] **Step 1: Write failing destination-preflight tests**
+
+Extend `tests/test-installer.sh` with table-driven temporary-project cases that
+prove `preflight_project` rejects each path before a mocked network function can
+run:
+
+```text
+<project>/wari           regular file
+<project>/wari           symbolic link, including a broken link
+<project>/.wari          directory
+<project>/.wari          symbolic link, including a broken link
+```
+
+Use both `[[ -e "$path" ]]` and `[[ -L "$path" ]]` in test setup assertions so
+broken links are genuinely covered. Add one empty-project case that succeeds.
+
+- [x] **Step 2: Run the installer suite and verify RED**
+
+Run:
+
+```bash
+/bin/bash tests/test-installer.sh
+```
+
+Expected: the `.wari` and broken-symbolic-link cases fail because the current
+preflight checks only `-e "$project_root/wari"`.
+
+- [x] **Step 3: Implement dual-path preflight**
+
+Update `preflight_project(project_root)` to loop over the two exact candidates
+`$project_root/.wari` and `$project_root/wari`. Reject a candidate when either
+`-e` or `-L` succeeds, print the exact conflicting path, and return before
+release resolution or download. Do not remove, merge, or modify either path.
+
+- [x] **Step 4: Run the installer suite and verify GREEN**
+
+Run `/bin/bash tests/test-installer.sh`.
+
+Expected: all tests pass with zero failures.
+
+- [x] **Step 5: Write failing dispatcher behavior tests**
+
+Extend `tests/test-wrappers.sh` to create `<project>/.wari/runtime/frankenphp`,
+call `generate_wrappers "$project/.wari"`, call
+`generate_dispatcher "$project/.wari"`, and move the generated
+`$project/.wari/wari` file to `$project/wari` to model publication. Assert:
+
+```bash
+./wari php -r 'echo "hello";' 'argument with spaces'
+./wari composer require vendor/package
+./wari serve
+./wari frankenphp run --config 'My Caddyfile'
+```
+
+Each command must preserve current working-directory behavior, exact argument
+boundaries, and the delegated exit status. Also assert:
+
+- no argument, `help`, `--help`, and `-h` print the four command names and exit 0;
+- an unknown command prints `Unknown Wari command: unknown`, prints usage to
+  standard error, does not invoke FrankenPHP, and exits nonzero;
+- a missing adjacent `.wari/` prints a clear error and exits nonzero;
+- Composer exports `PHP_BINARY=<project>/.wari/php` and prepends
+  `<project>/.wari` to `PATH`.
+
+- [x] **Step 6: Run the wrapper suite and verify RED**
+
+Run:
+
+```bash
+/bin/bash tests/test-wrappers.sh
+```
+
+Expected: failure because `generate_dispatcher` does not exist and the public
+root command is not generated.
+
+- [x] **Step 7: Implement the dispatcher generator**
+
+Add `generate_dispatcher(wari_dir)` to `install.sh`. It writes
+`$wari_dir/wari` with a single-quoted heredoc and mode 0755. The generated Bash
+3.2-compatible script must:
+
+```bash
+WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+```
+
+Check that `$WARI_RUNTIME_DIR` is a directory, read `${1-}` without violating
+`set -u`, and dispatch with an exact `case`:
+
+```text
+php          -> exec "$WARI_RUNTIME_DIR/php" "$@"
+composer     -> exec "$WARI_RUNTIME_DIR/composer" "$@"
+serve        -> exec "$WARI_RUNTIME_DIR/serve" "$@"
+frankenphp   -> exec "$WARI_RUNTIME_DIR/frankenphp" "$@"
+```
+
+Shift once before each `exec`. Help variants and no argument print usage and
+exit 0. Any other value prints the unknown-command error and usage to standard
+error and exits 1. Do not use `eval`, command strings, or persistent `PATH`
+changes.
+
+- [x] **Step 8: Run both offline suites and verify GREEN**
+
+Run:
+
+```bash
+/bin/bash tests/test-installer.sh
+/bin/bash tests/test-wrappers.sh
+```
+
+Expected: both suites pass with zero failures.
+
+- [x] **Step 9: Write failing two-phase publication tests**
+
+Extend `tests/test-installer.sh` around the existing mocked full-flow test.
+Require the success case to produce exactly:
+
+```text
+<project>/.wari/php
+<project>/.wari/composer
+<project>/.wari/serve
+<project>/.wari/frankenphp
+<project>/.wari/manifest.json
+<project>/.wari/runtime/frankenphp
+<project>/.wari/runtime/composer.phar
+<project>/wari
+```
+
+Assert there is no `<project>/.wari/wari` and no
+`<project>/.wari-install.*`. Add controlled failure cases for:
+
+1. the staging-to-`.wari` rename;
+2. failure to hard-link `.wari/wari` to the root dispatcher because a
+   destination appeared concurrently;
+3. replacement of the published root dispatcher before cleanup;
+4. a public dispatcher smoke check after both paths are published.
+
+For runtime-rename and public-smoke failures, assert no `.wari`, no `wari`, and
+no staging residue. For the concurrent dispatcher collision, assert `.wari`
+and staging are removed while the independently created `wari` remains
+unchanged. Use shell-function `mv` and `ln` doubles only at the filesystem
+boundary and assert real observable filesystem state, not mock call counts.
+
+- [x] **Step 10: Run the installer suite and verify RED**
+
+Run `/bin/bash tests/test-installer.sh`.
+
+Expected: layout and failure-cleanup assertions fail because current `main`
+renames staging directly to `wari/` and has no published-path ownership state.
+
+- [x] **Step 11: Implement transaction-like publication and cleanup**
+
+Initialize `PUBLISHED_RUNTIME=0` and `PUBLISHED_DISPATCHER=0` in global and
+reset state. Add `publish_install(staging, project_root)` with this exact order:
+
+1. Recheck that `$project_root/.wari` and `$project_root/wari` are absent using
+   `-e` and `-L`.
+2. Rename staging to `$project_root/.wari`.
+3. Clear `STAGING_DIR` immediately and set `PUBLISHED_RUNTIME=1`.
+4. Require `$project_root/.wari/wari` to be an executable regular file.
+5. Run `ln "$project_root/.wari/wari" "$project_root/wari"`. This must fail
+   without overwriting if the destination appeared after the recheck.
+6. Set `PUBLISHED_DISPATCHER=1` and retain the internal `.wari/wari` hard-link
+   name until public smoke checks finish.
+
+Extend cleanup so it may remove the exact final dispatcher only when
+`PUBLISHED_DISPATCHER=1`, and the exact hidden runtime only when
+`PUBLISHED_RUNTIME=1`. Remove the dispatcher before the runtime. Preserve the
+existing strict staging-path guard. While `.wari/wari` exists, cleanup may
+remove root `wari` only when
+`[[ "$project_root/wari" -ef "$project_root/.wari/wari" ]]` proves both names
+refer to the installer-generated file; preserve a root dispatcher that was
+replaced with a different file. Clear both ownership flags only after all
+public smoke checks succeed; normal errors and handled signals retain the trap
+long enough to clean both published paths. Add `ln` to `require_commands`.
+
+Do not claim crash-level atomicity: `SIGKILL` or power loss can leave a complete
+`.wari/` between runtime publication and dispatcher hard-link creation.
+Preflight must stop on that partial state for manual review.
+
+- [x] **Step 12: Write failing public smoke-check tests**
+
+Add installer tests that call the wished-for
+`run_public_smoke_checks(project_root)` interface. Use a generated dispatcher
+and fake internal wrappers to record the delegated commands. Require these
+exact public calls:
+
+```bash
+"$project_root/wari" php --version
+"$project_root/wari" composer --version
+"$project_root/wari" frankenphp version
+"$project_root/wari" php -r \
+  '$data = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); exit(is_array($data) ? 0 : 1);' \
+  "$project_root/.wari/manifest.json"
+```
+
+Assert `main` reaches these calls only after both final paths exist. Force one
+delegated command to fail and assert the publication cleanup removes both final
+paths.
+
+- [x] **Step 13: Run the public smoke-check test and verify RED**
+
+Run `/bin/bash tests/test-installer.sh`.
+
+Expected: failure because `run_public_smoke_checks` does not exist and `main`
+does not invoke the installed root dispatcher.
+
+- [x] **Step 14: Implement public smoke checks**
+
+Implement `run_public_smoke_checks(project_root)` with the four exact commands
+from Step 12. Keep the existing internal staged checks before publication. Call
+the new function after `publish_install`; after it succeeds, unlink
+`.wari/wari`, clear publication ownership flags, and then clear the traps.
+
+- [x] **Step 15: Run both offline suites and verify GREEN**
+
+Run:
+
+```bash
+/bin/bash tests/test-installer.sh
+/bin/bash tests/test-wrappers.sh
+```
+
+Expected: both suites pass with zero failures.
+
+- [x] **Step 16: Update success output and all documentation**
+
+Update `README.md`, success text, security examples, troubleshooting, and manual
+verification commands to use:
+
+```bash
+./wari php --version
+./wari composer require vendor/package
+./wari serve
+./wari frankenphp version
+```
+
+Document `.wari/manifest.json`, `.wari/runtime/frankenphp`, the intentional
+breaking change, dual-path refusal, and the hard-crash partial-state limitation.
+Keep the raw repository URL at
+`https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh` and
+change the optional attestation command to:
+
+```bash
+gh attestation verify ./.wari/runtime/frankenphp --owner php
+```
+
+- [x] **Step 17: Update the live test and CI-consumed behavior**
+
+Change `tests/test-live-install.sh` to assert executable `<project>/wari`, hidden
+runtime files under `<project>/.wari/`, and absence of `.wari/wari`. Run PHP,
+Composer, FrankenPHP, Composer plain-`php` scripts, Composer `@php` scripts, and
+the server exclusively through `./wari <command>`. The workflow file needs no
+command change because it invokes the test scripts rather than installed Wari
+commands.
+
+- [x] **Step 18: Run complete verification**
+
+Run:
+
+```bash
+/bin/bash -n install.sh tests/*.sh
+/bin/bash tests/test-installer.sh
+/bin/bash tests/test-wrappers.sh
+/bin/bash tests/test-live-install.sh
+WARI_RUN_LIVE=1 /bin/bash tests/test-live-install.sh
+git diff --check
+git status --short --branch
+```
+
+Expected: syntax succeeds; both offline suites report zero failures; the default
+live test explicitly skips; the opt-in live test verifies install, Composer
+child scripts, and loopback HTTP; `git diff --check` is clean. Report the actual
+staged/unstaged state without modifying it.
+
+- [x] **Step 19: User review checkpoint**
+
+Show the final layout, public command examples, test counts, live versions, and
+all modified files. Do not run `git add`, `git commit`, `git push`, worktree
+creation, branch creation, merge, or cleanup of user-managed Git state.

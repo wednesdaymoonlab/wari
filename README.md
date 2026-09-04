@@ -36,8 +36,9 @@ less wari-install.sh
 bash wari-install.sh
 ```
 
-The installer refuses to continue if `./wari` already exists. It never updates,
-merges, or removes an existing runtime.
+The installer refuses to continue if either `./wari` or `./.wari` already
+exists, including a symbolic link. It never updates, merges, or removes an
+existing runtime.
 
 FrankenPHP and Composer downloads show curl's ASCII progress bar when standard
 error is connected to a terminal. CI runs and redirected output stay quiet while
@@ -46,31 +47,35 @@ still reporting download errors and retries.
 ## Use
 
 ```bash
-./wari/php --version
-./wari/php artisan migrate
-./wari/composer install
-./wari/composer require vendor/package
-./wari/serve
-./wari/frankenphp version
+./wari php --version
+./wari php artisan migrate
+./wari composer install
+./wari composer require vendor/package
+./wari serve
+./wari frankenphp version
 ```
 
-`./wari/serve` is a local-development shortcut. It requires `./public`, binds
+`./wari` is the public command dispatcher. The downloaded runtime, Composer,
+manifest, and internal wrappers live in the adjacent hidden `.wari/` directory.
+The earlier `./wari/php` directory interface is intentionally unsupported.
+
+`./wari serve` is a local-development shortcut. It requires `./public`, binds
 only to `127.0.0.1:8000`, and does not accept custom options. Use the transparent
 wrapper for advanced commands:
 
 ```bash
-./wari/frankenphp php-server --listen 127.0.0.1:9000 --root ./public
-./wari/frankenphp run --config Caddyfile
+./wari frankenphp php-server --listen 127.0.0.1:9000 --root ./public
+./wari frankenphp run --config Caddyfile
 ```
 
-All wrappers treat the parent of `wari/` as the project root, so the whole
-project remains relocatable. The Composer wrapper temporarily prepends `wari/`
-to `PATH` and sets `PHP_BINARY`, which makes Composer child scripts use the same
-project-local PHP runtime.
+The dispatcher and internal wrappers treat the parent of `.wari/` as the
+project root, so the whole project remains relocatable. The Composer wrapper
+temporarily prepends `.wari/` to `PATH` and sets `PHP_BINARY` to `.wari/php`,
+which makes Composer child scripts use the same project-local PHP runtime.
 
 FrankenPHP `php-cli` does not support every native PHP CLI option. Wari removes
 `-d value` and `-dvalue` arguments and prints a warning for each ignored setting
-so Composer remains compatible. Use `./wari/php -m` to inspect extensions built
+so Composer remains compatible. Use `./wari php -m` to inspect extensions built
 into the selected FrankenPHP binary. Wari v1 does not install extensions.
 
 ## Supported platforms
@@ -92,13 +97,13 @@ It verifies FrankenPHP against the SHA-256 digest in GitHub release metadata and
 verifies the Composer installer against Composer's published SHA-384 checksum.
 There is no option to skip verification.
 
-`wari/manifest.json` records exact versions, platform, artifact URL, SHA-256,
+`.wari/manifest.json` records exact versions, platform, artifact URL, SHA-256,
 installation time, and verification status. Checksum verification does not
 prove build provenance, so Wari truthfully records `slsa_verified: false`.
 If GitHub CLI is already available, provenance can be checked manually:
 
 ```bash
-gh attestation verify ./wari/runtime/frankenphp --owner php
+gh attestation verify ./.wari/runtime/frankenphp --owner php
 ```
 
 GitHub CLI is optional and is never installed or invoked by Wari.
@@ -107,8 +112,10 @@ GitHub CLI is optional and is never installed or invoked by Wari.
 
 - GitHub API rate limit: wait for the unauthenticated limit to reset, then run
   the installer again. Wari will not fall back to an unverified download.
-- `./wari` already exists: move or remove it yourself after reviewing its
-  contents, then run the installer again.
+- `./wari` or `./.wari` already exists: inspect the path and move or remove it
+  yourself, then run the installer again. A power loss or `SIGKILL` during the
+  two-path publication step can leave a complete `.wari/` without `wari`; Wari
+  stops rather than overwriting that partial installation.
 - Composer reports a missing `ext-*`: the official static binary does not
   include that extension; Wari v1 cannot add it.
 - macOS blocks execution: review the downloaded artifact and local Gatekeeper

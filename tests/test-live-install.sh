@@ -47,31 +47,48 @@ printf '%s\n' '<?php echo "wari-live-ok";' >"$PROJECT/public/index.php"
     fi
 )
 
-"$PROJECT/wari/php" --version
-"$PROJECT/wari/composer" --version
-"$PROJECT/wari/frankenphp" version
-"$PROJECT/wari/php" -m >/dev/null
-if [[ "$("$PROJECT/wari/php" -r 'echo $argv[1];' 'wari-eval-ok')" != 'wari-eval-ok' ]]; then
+if [[ ! -x "$PROJECT/wari" || -d "$PROJECT/wari" ]]; then
+    printf 'Root Wari dispatcher was not installed as an executable file.\n' >&2
+    exit 1
+fi
+if [[ ! -x "$PROJECT/.wari/php" || ! -x "$PROJECT/.wari/composer" ||
+    ! -x "$PROJECT/.wari/serve" || ! -x "$PROJECT/.wari/frankenphp" ||
+    ! -x "$PROJECT/.wari/runtime/frankenphp" ||
+    ! -f "$PROJECT/.wari/runtime/composer.phar" ||
+    ! -f "$PROJECT/.wari/manifest.json" ]]; then
+    printf 'Hidden Wari runtime layout is incomplete.\n' >&2
+    exit 1
+fi
+if [[ -e "$PROJECT/.wari/wari" || -L "$PROJECT/.wari/wari" ]]; then
+    printf 'Staged dispatcher name remained inside the hidden runtime.\n' >&2
+    exit 1
+fi
+
+"$PROJECT/wari" php --version
+"$PROJECT/wari" composer --version
+"$PROJECT/wari" frankenphp version
+"$PROJECT/wari" php -m >/dev/null
+if [[ "$("$PROJECT/wari" php -r 'echo $argv[1];' 'wari-eval-ok')" != 'wari-eval-ok' ]]; then
     printf 'PHP -r compatibility check failed.\n' >&2
     exit 1
 fi
 
 printf '%s\n' \
     '{' \
-    '  "name": "wednesdaysmoonlab/wari-live-test",' \
+    '  "name": "wednesdaymoonlab/wari-live-test",' \
     '  "scripts": {' \
     '    "plain-php": "php -r \"echo 12345;\"",' \
     '    "at-php": "@php -r \"echo 67890;\""' \
     '  }' \
     '}' >"$PROJECT/composer.json"
 
-plain_script_output="$("$PROJECT/wari/composer" run plain-php --no-interaction 2>&1)"
+plain_script_output="$("$PROJECT/wari" composer run plain-php --no-interaction 2>&1)"
 if [[ "$plain_script_output" != *12345* ]]; then
     printf 'Composer plain php script failed:\n%s\n' "$plain_script_output" >&2
     exit 1
 fi
 
-at_php_output="$("$PROJECT/wari/composer" run at-php --no-interaction 2>&1)"
+at_php_output="$("$PROJECT/wari" composer run at-php --no-interaction 2>&1)"
 if [[ "$at_php_output" != *67890* ]]; then
     printf 'Composer @php script failed:\n%s\n' "$at_php_output" >&2
     exit 1
@@ -79,7 +96,7 @@ fi
 
 (
     cd "$PROJECT"
-    exec ./wari/serve
+    exec ./wari serve
 ) >"$LIVE_ROOT/server.log" 2>&1 &
 SERVER_PID=$!
 

@@ -208,6 +208,8 @@ test_explicit_options_skip_prompts() (
     [[ "$REQUESTED_VERSION" == 'v1.12.7' && "$LINUX_BUILD" == 'gnu' ]]
 )
 assert_eq '0' "$(test_explicit_options_skip_prompts; printf '%s' "$?")" 'explicit flags take precedence over interactive prompts'
+assert_contains "$(<"$METADATA_TMP/explicit-options.out")" "Runtime:      $METADATA_TMP/explicit-options/.wari" 'interactive summary shows hidden runtime destination'
+assert_contains "$(<"$METADATA_TMP/explicit-options.out")" "Command:      $METADATA_TMP/explicit-options/wari" 'interactive summary shows dispatcher destination'
 
 printf '\n' >"$METADATA_TMP/confirm-default.in"
 exec 3<"$METADATA_TMP/confirm-default.in" 4>"$METADATA_TMP/confirm-default.out"
@@ -235,9 +237,30 @@ assert_contains "$(basename -- "$STAGING_DIR")" '.wari-install.' 'uses staging p
 cleanup
 assert_eq '0' "$(if [[ ! -e "$STAGING_DIR" ]]; then printf 0; else printf 1; fi)" 'cleanup removes safe staging directory'
 
-mkdir -p "$SAFE_PROJECT/wari"
-assert_fails 'rejects an existing wari directory' preflight_project "$SAFE_PROJECT"
-rmdir "$SAFE_PROJECT/wari"
+PREFLIGHT_EMPTY="$METADATA_TMP/preflight-empty"
+mkdir -p "$PREFLIGHT_EMPTY"
+assert_eq '0' "$(preflight_project "$PREFLIGHT_EMPTY"; printf '%s' "$?")" 'accepts project without Wari paths'
+
+PREFLIGHT_WARI_FILE="$METADATA_TMP/preflight-wari-file"
+mkdir -p "$PREFLIGHT_WARI_FILE"
+printf 'user file' >"$PREFLIGHT_WARI_FILE/wari"
+assert_fails 'rejects an existing wari file' preflight_project "$PREFLIGHT_WARI_FILE"
+
+PREFLIGHT_WARI_LINK="$METADATA_TMP/preflight-wari-link"
+mkdir -p "$PREFLIGHT_WARI_LINK"
+ln -s missing-target "$PREFLIGHT_WARI_LINK/wari"
+assert_eq '0' "$(if [[ -L "$PREFLIGHT_WARI_LINK/wari" && ! -e "$PREFLIGHT_WARI_LINK/wari" ]]; then printf 0; else printf 1; fi)" 'creates a broken wari link fixture'
+assert_fails 'rejects a broken wari symbolic link' preflight_project "$PREFLIGHT_WARI_LINK"
+
+PREFLIGHT_RUNTIME_DIR="$METADATA_TMP/preflight-runtime-dir"
+mkdir -p "$PREFLIGHT_RUNTIME_DIR/.wari"
+assert_fails 'rejects an existing hidden runtime directory' preflight_project "$PREFLIGHT_RUNTIME_DIR"
+
+PREFLIGHT_RUNTIME_LINK="$METADATA_TMP/preflight-runtime-link"
+mkdir -p "$PREFLIGHT_RUNTIME_LINK"
+ln -s missing-target "$PREFLIGHT_RUNTIME_LINK/.wari"
+assert_eq '0' "$(if [[ -L "$PREFLIGHT_RUNTIME_LINK/.wari" && ! -e "$PREFLIGHT_RUNTIME_LINK/.wari" ]]; then printf 0; else printf 1; fi)" 'creates a broken hidden runtime link fixture'
+assert_fails 'rejects a broken hidden runtime symbolic link' preflight_project "$PREFLIGHT_RUNTIME_LINK"
 
 if ! declare -F install_frankenphp >/dev/null 2>&1; then
     fail 'artifact installation functions exist'
@@ -398,6 +421,50 @@ assert_contains "$MANIFEST_CONTENT" '"linux_build": null' 'manifest uses null Li
 assert_contains "$MANIFEST_CONTENT" '"checksum_verified": true' 'manifest records checksum verification'
 assert_contains "$MANIFEST_CONTENT" '"slsa_verified": false' 'manifest distinguishes SLSA status'
 
+PUBLIC_SMOKE_PROJECT="$METADATA_TMP/public-smoke"
+mkdir -p "$PUBLIC_SMOKE_PROJECT/.wari"
+{
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'set -u'
+    printf '%s\n' 'printf "%s" "${1-}" >>"$WARI_PUBLIC_CAPTURE"'
+    printf '%s\n' 'shift || true'
+    printf '%s\n' 'for argument in "$@"; do printf "|%s" "$argument" >>"$WARI_PUBLIC_CAPTURE"; done'
+    printf '%s\n' 'printf "\n" >>"$WARI_PUBLIC_CAPTURE"'
+} >"$PUBLIC_SMOKE_PROJECT/wari"
+chmod 755 "$PUBLIC_SMOKE_PROJECT/wari"
+PUBLIC_SMOKE_CAPTURE="$METADATA_TMP/public-smoke.capture"
+: >"$PUBLIC_SMOKE_CAPTURE"
+assert_eq '0' "$(WARI_PUBLIC_CAPTURE="$PUBLIC_SMOKE_CAPTURE" run_public_smoke_checks "$PUBLIC_SMOKE_PROJECT"; printf '%s' "$?")" 'public smoke checks run through root dispatcher'
+PUBLIC_SMOKE_CONTENT="$(<"$PUBLIC_SMOKE_CAPTURE")"
+assert_contains "$PUBLIC_SMOKE_CONTENT" 'php|--version' 'public smoke checks PHP version'
+assert_contains "$PUBLIC_SMOKE_CONTENT" 'composer|--version' 'public smoke checks Composer version'
+assert_contains "$PUBLIC_SMOKE_CONTENT" 'frankenphp|version' 'public smoke checks FrankenPHP version'
+assert_contains "$PUBLIC_SMOKE_CONTENT" "php|-r|" 'public smoke checks manifest through PHP'
+assert_contains "$PUBLIC_SMOKE_CONTENT" "$PUBLIC_SMOKE_PROJECT/.wari/manifest.json" 'public smoke checks hidden manifest path'
+
+test_main_public_smoke_failure_cleanup() (
+    local project="$METADATA_TMP/main-public-smoke-failure"
+    local status
+    mkdir -p "$project"
+    uname() {
+        case "$1" in -s) printf 'Linux\n' ;; -m) printf 'x86_64\n' ;; esac
+    }
+    fetch_release_json() { cat "$FIXTURE"; }
+    install_frankenphp() { write_fake_version_runtime "$1/runtime/frankenphp"; }
+    install_composer() { printf 'fake composer' >"$1/runtime/composer.phar"; }
+    run_public_smoke_checks() { return 19; }
+    (
+        cd "$project"
+        main --yes --version 1.12.7 --linux-build static
+    ) >/dev/null 2>&1
+    status=$?
+    [[ "$status" -eq 19 ]] || return 1
+    [[ ! -e "$project/.wari" && ! -L "$project/.wari" ]] || return 2
+    [[ ! -e "$project/wari" && ! -L "$project/wari" ]] || return 3
+    [[ -z "$(find "$project" -maxdepth 1 -name '.wari-install.*' -print -quit)" ]]
+)
+assert_eq '0' "$(test_main_public_smoke_failure_cleanup; printf '%s' "$?")" 'public smoke failure rolls back both published paths'
+
 test_main_success() (
     local project="$METADATA_TMP/main-success"
     mkdir -p "$project"
@@ -408,11 +475,91 @@ test_main_success() (
     fetch_release_json() { cat "$FIXTURE"; }
     install_frankenphp() { write_fake_version_runtime "$1/runtime/frankenphp"; }
     install_composer() { printf 'fake composer' >"$1/runtime/composer.phar"; }
-    main --yes --version 1.12.7 --linux-build static || return 1
-    [[ -x "$project/wari/php" && -f "$project/wari/manifest.json" ]]
+    main --yes --version 1.12.7 --linux-build static >"$project/install-output" || return 1
+    [[ -x "$project/wari" && ! -d "$project/wari" ]] || return 2
+    [[ -x "$project/.wari/php" && -x "$project/.wari/composer" ]] || return 3
+    [[ -x "$project/.wari/serve" && -x "$project/.wari/frankenphp" ]] || return 4
+    [[ -f "$project/.wari/manifest.json" ]] || return 5
+    [[ -x "$project/.wari/runtime/frankenphp" && -f "$project/.wari/runtime/composer.phar" ]] || return 6
+    [[ ! -e "$project/.wari/wari" && ! -L "$project/.wari/wari" ]] || return 7
+    [[ "$(<"$project/install-output")" == *'./wari php --version'* ]] || return 8
+    [[ "$(<"$project/install-output")" == *'./wari composer --version'* ]] || return 9
+    [[ "$(<"$project/install-output")" == *'./wari serve'* ]] || return 10
     [[ -z "$(find "$project" -maxdepth 1 -name '.wari-install.*' -print -quit)" ]]
 )
-assert_eq '0' "$(test_main_success >/dev/null; printf '%s' "$?")" 'main installs and atomically renames a complete runtime'
+assert_eq '0' "$(test_main_success >/dev/null; printf '%s' "$?")" 'main publishes hidden runtime and root dispatcher'
+
+test_publish_install_success() (
+    local project="$METADATA_TMP/publish-success"
+    mkdir -p "$project"
+    PROJECT_ROOT="$project"
+    STAGING_DIR=''
+    PUBLISHED_RUNTIME=0
+    PUBLISHED_DISPATCHER=0
+    create_staging "$project"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$STAGING_DIR/wari"
+    chmod 755 "$STAGING_DIR/wari"
+    publish_install "$STAGING_DIR" "$project" || return 1
+    [[ -d "$project/.wari" && -x "$project/wari" && -x "$project/.wari/wari" ]] || return 2
+    [[ "$project/wari" -ef "$project/.wari/wari" ]]
+)
+assert_eq '0' "$(test_publish_install_success; printf '%s' "$?")" 'publishes runtime and ownership-verifiable dispatcher link'
+
+test_publish_runtime_rename_failure_cleanup() (
+    local project="$METADATA_TMP/publish-mv-failure"
+    mkdir -p "$project"
+    PROJECT_ROOT="$project"
+    STAGING_DIR=''
+    PUBLISHED_RUNTIME=0
+    PUBLISHED_DISPATCHER=0
+    create_staging "$project"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$STAGING_DIR/wari"
+    chmod 755 "$STAGING_DIR/wari"
+    mv() { return 55; }
+    publish_install "$STAGING_DIR" "$project" && return 1
+    cleanup || return 1
+    [[ ! -e "$project/.wari" && ! -e "$project/wari" ]]
+    [[ -z "$(find "$project" -maxdepth 1 -name '.wari-install.*' -print -quit)" ]]
+)
+assert_eq '0' "$(test_publish_runtime_rename_failure_cleanup 2>/dev/null; printf '%s' "$?")" 'cleans staging after runtime publication failure'
+
+test_publish_dispatcher_collision_cleanup() (
+    local project="$METADATA_TMP/publish-link-collision"
+    mkdir -p "$project"
+    PROJECT_ROOT="$project"
+    STAGING_DIR=''
+    PUBLISHED_RUNTIME=0
+    PUBLISHED_DISPATCHER=0
+    create_staging "$project"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$STAGING_DIR/wari"
+    chmod 755 "$STAGING_DIR/wari"
+    ln() { printf 'concurrent user file' >"$2"; return 1; }
+    publish_install "$STAGING_DIR" "$project" && return 1
+    cleanup || return 1
+    [[ ! -e "$project/.wari" ]]
+    [[ -f "$project/wari" && "$(<"$project/wari")" == 'concurrent user file' ]]
+    [[ -z "$(find "$project" -maxdepth 1 -name '.wari-install.*' -print -quit)" ]]
+)
+assert_eq '0' "$(test_publish_dispatcher_collision_cleanup 2>/dev/null; printf '%s' "$?")" 'preserves concurrent dispatcher while cleaning published runtime'
+
+test_cleanup_preserves_replaced_dispatcher() (
+    local project="$METADATA_TMP/publish-replaced-dispatcher"
+    mkdir -p "$project"
+    PROJECT_ROOT="$project"
+    STAGING_DIR=''
+    PUBLISHED_RUNTIME=0
+    PUBLISHED_DISPATCHER=0
+    create_staging "$project"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$STAGING_DIR/wari"
+    chmod 755 "$STAGING_DIR/wari"
+    publish_install "$STAGING_DIR" "$project" || return 1
+    rm -f -- "$project/wari"
+    printf 'replacement user file' >"$project/wari"
+    cleanup || return 2
+    [[ ! -e "$project/.wari" ]] || return 3
+    [[ -f "$project/wari" && "$(<"$project/wari")" == 'replacement user file' ]]
+)
+assert_eq '0' "$(test_cleanup_preserves_replaced_dispatcher; printf '%s' "$?")" 'cleanup preserves dispatcher replaced after publication'
 
 test_existing_wari_stops_before_fetch() (
     local project="$METADATA_TMP/main-existing"

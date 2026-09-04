@@ -17,6 +17,8 @@ ASSET_URL=''
 ASSET_SHA256=''
 PROJECT_ROOT=''
 STAGING_DIR=''
+PUBLISHED_RUNTIME=0
+PUBLISHED_DISPATCHER=0
 INSTALLED_PHP_VERSION=''
 INSTALLED_FRANKENPHP_VERSION=''
 INSTALLED_COMPOSER_VERSION=''
@@ -479,15 +481,18 @@ confirm_install() {
 
 preflight_project() {
     local project_root="$1"
+    local candidate
 
     if [[ ! -d "$project_root" || ! -w "$project_root" ]]; then
         die "project directory is not writable: $project_root"
         return 1
     fi
-    if [[ -e "$project_root/wari" ]]; then
-        printf 'Error: %s/wari already exists.\nWari did not change any files.\n' "$project_root" >&2
-        return 1
-    fi
+    for candidate in "$project_root/.wari" "$project_root/wari"; do
+        if [[ -e "$candidate" || -L "$candidate" ]]; then
+            printf 'Error: %s already exists.\nWari did not change any files.\n' "$candidate" >&2
+            return 1
+        fi
+    done
 }
 
 is_safe_staging_path() {
@@ -515,12 +520,31 @@ create_staging() {
 }
 
 cleanup() {
+    local published_runtime="${PROJECT_ROOT:-}/.wari"
+    local published_dispatcher="${PROJECT_ROOT:-}/wari"
+    local staged_dispatcher="$published_runtime/wari"
+
     if [[ -n "${STAGING_DIR:-}" && -e "$STAGING_DIR" ]]; then
         if ! is_safe_staging_path "$PROJECT_ROOT" "$STAGING_DIR"; then
             printf 'Error: refusing to clean unsafe staging path: %s\n' "$STAGING_DIR" >&2
             return 1
         fi
         rm -rf -- "$STAGING_DIR"
+    fi
+
+    if [[ -n "${PROJECT_ROOT:-}" ]]; then
+        if [[ -e "$published_dispatcher" || -L "$published_dispatcher" ]]; then
+            if [[ -e "$staged_dispatcher" ]]; then
+                if [[ "$published_dispatcher" -ef "$staged_dispatcher" ]]; then
+                    rm -f -- "$published_dispatcher"
+                fi
+            elif [[ "${PUBLISHED_DISPATCHER:-0}" -eq 1 ]]; then
+                rm -f -- "$published_dispatcher"
+            fi
+        fi
+        if [[ "${PUBLISHED_RUNTIME:-0}" -eq 1 && -d "$published_runtime" && ! -L "$published_runtime" ]]; then
+            rm -rf -- "$published_runtime"
+        fi
     fi
 }
 
@@ -752,6 +776,87 @@ WARI_FRANKENPHP
         "$wari_dir/frankenphp"
 }
 
+generate_dispatcher() {
+    local wari_dir="$1"
+
+    if [[ ! -d "$wari_dir" ]]; then
+        die "Wari directory is missing: $wari_dir"
+        return 1
+    fi
+
+    cat >"$wari_dir/wari" <<'WARI_DISPATCHER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    printf '%s\n' \
+        'Usage: ./wari <command> [arguments]' \
+        '' \
+        'Commands:' \
+        '  php          Run project-local PHP' \
+        '  composer     Run project-local Composer' \
+        '  serve        Serve ./public at http://127.0.0.1:8000' \
+        '  frankenphp   Run the bundled FrankenPHP binary' \
+        '  help         Show this help'
+}
+
+WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+
+if [[ ! -d "$WARI_RUNTIME_DIR" ]]; then
+    printf 'Error: Wari runtime directory does not exist: %s\n' "$WARI_RUNTIME_DIR" >&2
+    exit 1
+fi
+
+command_name="${1-}"
+case "$command_name" in
+    ''|help|--help|-h)
+        usage
+        ;;
+    php|composer|serve|frankenphp)
+        shift
+        exec "$WARI_RUNTIME_DIR/$command_name" "$@"
+        ;;
+    *)
+        printf 'Error: Unknown Wari command: %s\n\n' "$command_name" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
+WARI_DISPATCHER
+
+    chmod 755 "$wari_dir/wari"
+}
+
+publish_install() {
+    local staging="$1"
+    local project_root="$2"
+    local runtime_destination="$project_root/.wari"
+    local dispatcher_source="$runtime_destination/wari"
+    local dispatcher_destination="$project_root/wari"
+
+    require_safe_staging "$staging" || return 1
+    if [[ -e "$runtime_destination" || -L "$runtime_destination" ||
+        -e "$dispatcher_destination" || -L "$dispatcher_destination" ]]; then
+        die 'Wari destination appeared while installation was in progress'
+        return 1
+    fi
+
+    mv -- "$staging" "$runtime_destination" || return 1
+    STAGING_DIR=''
+    PUBLISHED_RUNTIME=1
+
+    if [[ ! -f "$dispatcher_source" || ! -x "$dispatcher_source" || -L "$dispatcher_source" ]]; then
+        die 'generated Wari dispatcher is missing or invalid'
+        return 1
+    fi
+    if ! ln "$dispatcher_source" "$dispatcher_destination"; then
+        die 'could not publish Wari dispatcher without overwriting an existing path'
+        return 1
+    fi
+    PUBLISHED_DISPATCHER=1
+}
+
 json_escape() {
     local value="$1"
 
@@ -833,10 +938,22 @@ run_smoke_checks() {
         "$wari_dir/manifest.json" >/dev/null
 }
 
+run_public_smoke_checks() {
+    local project_root="$1"
+    local dispatcher="$project_root/wari"
+
+    "$dispatcher" php --version >/dev/null || return
+    "$dispatcher" composer --version >/dev/null || return
+    "$dispatcher" frankenphp version >/dev/null || return
+    "$dispatcher" php -r \
+        '$data = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); exit(is_array($data) ? 0 : 1);' \
+        "$project_root/.wari/manifest.json" >/dev/null || return
+}
+
 require_commands() {
     local command_name
 
-    for command_name in curl uname mktemp chmod mv sed awk tr dirname basename date; do
+    for command_name in curl uname mktemp chmod mv ln sed awk tr dirname basename date; do
         if ! command -v "$command_name" >/dev/null 2>&1; then
             die "required command not found: $command_name"
             return 1
@@ -901,7 +1018,8 @@ collect_interactive_choices() {
     if [[ "$PLATFORM_OS" == 'linux' ]]; then
         printf 'Linux build: %s\n' "$LINUX_BUILD" >&4
     fi
-    printf 'Composer:    latest stable\nDestination: %s/wari\n\n' "$PROJECT_ROOT" >&4
+    printf 'Composer:    latest stable\nRuntime:      %s/.wari\nCommand:      %s/wari\n\n' \
+        "$PROJECT_ROOT" "$PROJECT_ROOT" >&4
 }
 
 reset_runtime_state() {
@@ -919,6 +1037,8 @@ reset_runtime_state() {
     ASSET_SHA256=''
     PROJECT_ROOT=''
     STAGING_DIR=''
+    PUBLISHED_RUNTIME=0
+    PUBLISHED_DISPATCHER=0
     INSTALLED_PHP_VERSION=''
     INSTALLED_FRANKENPHP_VERSION=''
     INSTALLED_COMPOSER_VERSION=''
@@ -968,12 +1088,16 @@ main() {
     printf 'Downloading and verifying Composer...\n'
     install_composer "$STAGING_DIR" || return 1
     generate_wrappers "$STAGING_DIR" || return 1
+    generate_dispatcher "$STAGING_DIR" || return 1
     detect_installed_versions "$STAGING_DIR" || return 1
     write_manifest "$STAGING_DIR" || return 1
     run_smoke_checks "$STAGING_DIR" || return 1
 
-    mv -- "$STAGING_DIR" "$PROJECT_ROOT/wari"
-    STAGING_DIR=''
+    publish_install "$STAGING_DIR" "$PROJECT_ROOT" || return 1
+    run_public_smoke_checks "$PROJECT_ROOT" || return $?
+    rm -f -- "$PROJECT_ROOT/.wari/wari" || return 1
+    PUBLISHED_DISPATCHER=0
+    PUBLISHED_RUNTIME=0
     trap - EXIT INT TERM HUP
 
     printf '\nInstalled successfully.\n\n'
@@ -983,9 +1107,9 @@ main() {
     printf 'Checksum:     verified\n'
     printf 'SLSA:         not checked\n\n'
     printf 'Try:\n'
-    printf '  ./wari/php --version\n'
-    printf '  ./wari/composer --version\n'
-    printf '  ./wari/serve\n'
+    printf '  ./wari php --version\n'
+    printf '  ./wari composer --version\n'
+    printf '  ./wari serve\n'
 }
 
 if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]-}" == "$0" ]]; then
