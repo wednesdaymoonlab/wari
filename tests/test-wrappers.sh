@@ -35,7 +35,7 @@ mkdir -p "$WARI/runtime" "$PROJECT/nested/path"
     printf '%s\n' '  printf '\''arg%s=<%s>\n'\'' "$index" "$argument" >>"$FAKE_CAPTURE"'
     printf '%s\n' '  index=$((index + 1))'
     printf '%s\n' 'done'
-    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\n'\'' "${PHP_BINARY-}" "$PATH" >>"$FAKE_CAPTURE"'
+    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" >>"$FAKE_CAPTURE"'
     printf '%s\n' 'exit "${FAKE_EXIT_CODE:-0}"'
 } >"$WARI/runtime/frankenphp"
 chmod 755 "$WARI/runtime/frankenphp"
@@ -57,7 +57,7 @@ mv -- "$WARI/wari" "$DISPATCHER"
     FAKE_CAPTURE="$CAPTURE" "$WARI/php" alpha 'two words' '*'
 )
 PHP_CAPTURE="$(<"$CAPTURE")"
-assert_contains "$PHP_CAPTURE" "cwd=$PROJECT" 'PHP wrapper changes to project root'
+assert_contains "$PHP_CAPTURE" "cwd=$PROJECT/nested/path" 'PHP wrapper preserves caller working directory'
 assert_contains "$PHP_CAPTURE" 'arg0=<php-cli>' 'PHP wrapper selects php-cli'
 assert_contains "$PHP_CAPTURE" 'arg1=<alpha>' 'PHP wrapper forwards first argument'
 assert_contains "$PHP_CAPTURE" 'arg2=<two words>' 'PHP wrapper preserves spaces'
@@ -91,6 +91,9 @@ assert_contains "$(<"$WRAPPER_TMP/php-warning")" 'memory_limit=-1' 'PHP wrapper 
 assert_contains "$(<"$WRAPPER_TMP/php-warning")" 'display_errors=1' 'PHP wrapper warns for joined -d value'
 assert_fails 'PHP wrapper rejects bare -d' env FAKE_CAPTURE="$CAPTURE" "$WARI/php" -d
 
+FAKE_CAPTURE="$CAPTURE" WARI_COMPOSER_CONTEXT=1 "$WARI/php" -d memory_limit=1536M -ddisplay_errors=1 script.php 2>"$WRAPPER_TMP/composer-php-warning"
+assert_eq '' "$(<"$WRAPPER_TMP/composer-php-warning")" 'PHP wrapper suppresses unsupported -d warnings in Composer context'
+
 FAKE_CAPTURE="$CAPTURE" "$WARI/composer" require 'vendor/package'
 COMPOSER_CAPTURE="$(<"$CAPTURE")"
 assert_contains "$COMPOSER_CAPTURE" 'arg0=<php-cli>' 'Composer runs through PHP CLI'
@@ -98,6 +101,7 @@ assert_contains "$COMPOSER_CAPTURE" "arg1=<$WARI/runtime/composer.phar>" 'Compos
 assert_contains "$COMPOSER_CAPTURE" 'arg2=<require>' 'Composer forwards command'
 assert_contains "$COMPOSER_CAPTURE" "php_binary=$WARI/php" 'Composer exports PHP_BINARY'
 assert_contains "$COMPOSER_CAPTURE" "path=$WARI:" 'Composer prepends Wari to PATH'
+assert_contains "$COMPOSER_CAPTURE" 'wari_composer_context=1' 'Composer marks its process tree for PHP compatibility'
 
 assert_fails 'serve rejects a project without public directory' env FAKE_CAPTURE="$CAPTURE" "$WARI/serve"
 mkdir -p "$PROJECT/public"

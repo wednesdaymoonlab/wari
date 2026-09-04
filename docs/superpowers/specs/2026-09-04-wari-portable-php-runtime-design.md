@@ -176,10 +176,13 @@ wrappers in `.wari/`. The actual upstream artifacts stay under
 `.wari/runtime/`.
 
 The dispatcher resolves its own directory as the project root and requires the
-adjacent `.wari/` directory. Every internal wrapper resolves `.wari/`, treats
-its parent as the project root, changes to that root, and uses `exec` for the
-final process. Moving the whole project is supported. Moving `.wari/` or the
-dispatcher independently between projects is not a supported contract.
+adjacent `.wari/` directory. Every internal wrapper resolves `.wari/` and
+treats its parent as the project root. The dispatcher, Composer, server, and
+raw FrankenPHP wrappers change to that root; the PHP wrapper preserves the
+caller's working directory so Composer package scripts can resolve relative
+paths. All wrappers use `exec` for the final process. Moving the whole project
+is supported. Moving `.wari/` or the dispatcher independently between projects
+is not a supported contract.
 Dispatcher and wrapper symlink relocation are outside v1 scope.
 
 ## 7. Wrapper contracts
@@ -216,7 +219,9 @@ runtime/frankenphp php-cli <arguments>
 Because FrankenPHP `php-cli` accepts a PHP script path rather than parsing all
 native PHP CLI modes, Wari routes `--version`/`-v`, `-r`, `-m`, and `-i`
 through the internal `runtime/php-proxy.php` compatibility helper. Normal PHP
-script paths and Composer continue to execute directly through `php-cli`.
+script paths and Composer continue to execute directly through `php-cli`. The
+PHP wrapper preserves the caller's working directory, including the package
+directory selected by Composer while it executes project scripts.
 
 Examples:
 
@@ -232,9 +237,11 @@ interprets `version` as a script filename.
 
 FrankenPHP's PHP CLI compatibility does not support every native PHP option.
 For compatibility with Composer, Wari removes both `-d value` and `-dvalue`
-arguments before invocation and prints a warning to standard error identifying
-each ignored setting. A bare `-d` without a value is an input error. All other
-arguments preserve their original order and boundaries.
+arguments before invocation. Calls made inside the Composer process tree do so
+silently because Composer adds these options automatically; direct `wari php`
+calls print a warning identifying each ignored setting so users do not assume
+the setting was applied. A bare `-d` without a value is an input error. All
+other arguments preserve their original order and boundaries.
 
 ### 7.3 `wari composer`
 
@@ -243,6 +250,7 @@ The Composer wrapper exports, only for its process tree:
 ```text
 PHP_BINARY=<absolute-project-path>/.wari/php
 PATH=<absolute-project-path>/.wari:$PATH
+WARI_COMPOSER_CONTEXT=1
 ```
 
 It then invokes the local `composer.phar` through `.wari/php`. Consequently,

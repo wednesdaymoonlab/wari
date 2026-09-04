@@ -670,8 +670,6 @@ WARI_PHP_PROXY
 set -Eeuo pipefail
 
 WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
-cd -- "$PROJECT_ROOT"
 
 arguments=("$@")
 filtered_arguments=()
@@ -685,12 +683,16 @@ while ((index < ${#arguments[@]})); do
                 exit 2
             fi
             setting="${arguments[$((index + 1))]}"
-            printf 'Wari warning: ignored unsupported PHP option: -d %s\n' "$setting" >&2
+            if [[ "${WARI_COMPOSER_CONTEXT:-0}" != 1 ]]; then
+                printf 'Wari warning: ignored unsupported PHP option: -d %s\n' "$setting" >&2
+            fi
             index=$((index + 2))
             ;;
         -d*)
             setting="${argument#-d}"
-            printf 'Wari warning: ignored unsupported PHP option: -d%s\n' "$setting" >&2
+            if [[ "${WARI_COMPOSER_CONTEXT:-0}" != 1 ]]; then
+                printf 'Wari warning: ignored unsupported PHP option: -d%s\n' "$setting" >&2
+            fi
             index=$((index + 1))
             ;;
         *)
@@ -737,6 +739,7 @@ cd -- "$PROJECT_ROOT"
 
 export PHP_BINARY="$WARI_DIR/php"
 export PATH="$WARI_DIR:$PATH"
+export WARI_COMPOSER_CONTEXT=1
 exec "$WARI_DIR/php" "$WARI_DIR/runtime/composer.phar" "$@"
 WARI_COMPOSER
 

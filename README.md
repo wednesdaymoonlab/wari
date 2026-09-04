@@ -68,15 +68,17 @@ wrapper for advanced commands:
 ./wari frankenphp run --config Caddyfile
 ```
 
-The dispatcher and internal wrappers treat the parent of `.wari/` as the
-project root, so the whole project remains relocatable. The Composer wrapper
-temporarily prepends `.wari/` to `PATH` and sets `PHP_BINARY` to `.wari/php`,
-which makes Composer child scripts use the same project-local PHP runtime.
+The dispatcher locates `.wari/` relative to itself, so the whole project
+remains relocatable. The PHP wrapper preserves its caller's working directory
+so Composer package scripts can resolve relative paths such as `artisan`. The
+Composer wrapper temporarily prepends `.wari/` to `PATH` and sets `PHP_BINARY`
+to `.wari/php`, which makes child scripts use the same project-local runtime.
 
 FrankenPHP `php-cli` does not support every native PHP CLI option. Wari removes
-`-d value` and `-dvalue` arguments and prints a warning for each ignored setting
-so Composer remains compatible. Use `./wari php -m` to inspect extensions built
-into the selected FrankenPHP binary. Wari v1 does not install extensions.
+`-d value` and `-dvalue` arguments so Composer remains compatible. Composer
+child processes do this silently; direct `wari php` calls warn for each ignored
+setting. Use `./wari php -m` to inspect extensions built into the selected
+FrankenPHP binary. Wari v1 does not install extensions.
 
 ## Supported platforms
 
