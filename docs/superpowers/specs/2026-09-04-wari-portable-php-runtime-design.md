@@ -164,7 +164,8 @@ project/
     ├── manifest.json
     └── runtime/
         ├── frankenphp
-        └── composer.phar
+        ├── composer.phar
+        └── php-proxy.php
 ```
 
 The four top-level commands are executable Bash wrappers. The actual upstream
@@ -185,6 +186,11 @@ The PHP wrapper invokes:
 ```text
 runtime/frankenphp php-cli <arguments>
 ```
+
+Because FrankenPHP `php-cli` accepts a PHP script path rather than parsing all
+native PHP CLI modes, Wari routes `--version`/`-v`, `-r`, `-m`, and `-i`
+through the internal `runtime/php-proxy.php` compatibility helper. Normal PHP
+script paths and Composer continue to execute directly through `php-cli`.
 
 Examples:
 

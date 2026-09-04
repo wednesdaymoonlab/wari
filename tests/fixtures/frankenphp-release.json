@@ -1,0 +1,42 @@
+{
+  "tag_name": "v1.12.7",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "frankenphp-linux-aarch64",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-aarch64"
+    },
+    {
+      "name": "frankenphp-linux-aarch64-gnu",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-aarch64-gnu"
+    },
+    {
+      "name": "frankenphp-linux-x86_64",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64"
+    },
+    {
+      "name": "frankenphp-linux-x86_64-debug",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64-debug"
+    },
+    {
+      "name": "frankenphp-linux-x86_64-gnu",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64-gnu"
+    },
+    {
+      "name": "frankenphp-mac-arm64",
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-mac-arm64"
+    },
+    {
+      "name": "frankenphp-mac-x86_64",
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-mac-x86_64"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_live:
+        description: Download and test real FrankenPHP and Composer artifacts
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: wari-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    name: Offline (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+          - name: macOS Apple Silicon
+            runner: macos-15
+          - name: macOS Intel
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run offline installer tests
+        shell: bash
+        run: bash tests/test-installer.sh
+      - name: Run offline wrapper tests
+        shell: bash
+        run: bash tests/test-wrappers.sh
+
+  live:
+    name: Live (${{ matrix.name }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_live }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64 static
+            runner: ubuntu-24.04
+            linux_build: static
+          - name: Linux x86_64 GNU
+            runner: ubuntu-24.04
+            linux_build: gnu
+          - name: Linux ARM64 static
+            runner: ubuntu-24.04-arm
+            linux_build: static
+          - name: macOS Apple Silicon
+            runner: macos-15
+            linux_build: static
+          - name: macOS Intel
+            runner: macos-15-intel
+            linux_build: static
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install and test real runtime
+        shell: bash
+        env:
+          WARI_RUN_LIVE: '1'
+          WARI_LINUX_BUILD: ${{ matrix.linux_build }}
+        run: bash tests/test-live-install.sh
