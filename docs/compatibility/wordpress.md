@@ -5,6 +5,15 @@ Status: **Verified** with WordPress 7.1 and a temporary MySQL container.
 WordPress is distributed as an application archive rather than a Composer
 project, so its source installation is independent of Wari.
 
+## Install Wari
+
+After extracting or cloning WordPress, install Wari in the WordPress root:
+
+```bash
+cd wordpress-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+```
+
 ## Database
 
 Start a disposable MySQL server:
@@ -30,12 +39,10 @@ Use these values in `wp-config.php` or the browser installer:
 
 ## Web server
 
-Assuming `wordpress-app/` is beside `wari`:
-
 ```bash
 ./wari php -S 127.0.0.1:8082 \
-  -t wordpress-app \
-  wordpress-app/index.php
+  -t . \
+  index.php
 ```
 
 Then open `http://127.0.0.1:8082` and complete the installer. A basic HTTP check

@@ -4,8 +4,14 @@ Status: **Verified** with Slim 4.15.3 using the Slim Skeleton application.
 
 ## Install
 
+First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
+From `wari-bootstrap/`, run:
+
 ```bash
-./wari composer create-project slim/slim-skeleton slim-app
+./wari composer create-project slim/slim-skeleton ../slim-app
+mv wari .wari ../slim-app/
+cd ../slim-app
+rmdir ../wari-bootstrap
 ```
 
 ## Development server
@@ -14,13 +20,13 @@ The skeleton's Composer script uses `php -S localhost:8080 -t public`. Wari
 translates that child command to FrankenPHP:
 
 ```bash
-./wari composer --working-dir=slim-app start
+./wari composer start
 ```
 
 Direct invocation is also supported:
 
 ```bash
-./wari php -S 127.0.0.1:8080 -t slim-app/public
+./wari php -S 127.0.0.1:8080 -t public
 ```
 
 Verify the default route:
@@ -32,7 +38,7 @@ curl -i http://127.0.0.1:8080/
 ## Tests
 
 ```bash
-./wari composer --working-dir=slim-app test
+./wari composer test
 ```
 
 The test application also used a small `GET /api/tarot/random` JSON endpoint to

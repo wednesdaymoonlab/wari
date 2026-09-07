@@ -5,40 +5,44 @@ Status: **Verified** with Symfony 8.1.6.
 ## Install
 
 The tested application is a Symfony web application with Flex, Doctrine, Twig,
-AssetMapper, and PHPUnit installed through Composer. A reproducible setup from
-the directory containing `wari` is:
+AssetMapper, and PHPUnit installed through Composer. First create the
+[temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
+From `wari-bootstrap/`, run:
 
 ```bash
-./wari composer create-project symfony/skeleton:"8.1.*" symfony-app
-./wari composer --working-dir=symfony-app require webapp
+./wari composer create-project symfony/skeleton:"8.1.*" ../symfony-app
+mv wari .wari ../symfony-app/
+cd ../symfony-app
+rmdir ../wari-bootstrap
+./wari composer require webapp
 ```
 
 ## CLI
 
 ```bash
-./wari php symfony-app/bin/console --version
-./wari php symfony-app/bin/console about
-./wari php symfony-app/bin/console debug:router
+./wari php bin/console --version
+./wari php bin/console about
+./wari php bin/console debug:router
 ```
 
 ## Web server
 
 ```bash
-./wari php -S 127.0.0.1:8081 -t symfony-app/public
+./wari php -S 127.0.0.1:8081 -t public
 curl -I http://127.0.0.1:8081
 ```
 
 ## Composer and tests
 
 ```bash
-./wari composer --working-dir=symfony-app install
-./wari php symfony-app/bin/phpunit
+./wari composer install
+./wari php bin/phpunit
 ```
 
 If the project does not include `bin/phpunit`, use its installed PHPUnit binary:
 
 ```bash
-./wari php symfony-app/vendor/bin/phpunit -c symfony-app/phpunit.dist.xml
+./wari php vendor/bin/phpunit -c phpunit.dist.xml
 ```
 
 ## Notes

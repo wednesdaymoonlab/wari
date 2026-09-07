@@ -4,10 +4,14 @@ Status: **Verified** with Laravel Framework 13.30.1.
 
 ## Install
 
-From the directory containing `wari`:
+First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
+From `wari-bootstrap/`, run:
 
 ```bash
-./wari composer create-project laravel/laravel my-laravel-app
+./wari composer create-project laravel/laravel ../laravel-project
+mv wari .wari ../laravel-project/
+cd ../laravel-project
+rmdir ../wari-bootstrap
 ```
 
 This exercises Composer archive extraction and Laravel's `@php` project-create
@@ -17,17 +21,15 @@ migrations.
 ## CLI
 
 ```bash
-./wari php my-laravel-app/artisan --version
-./wari php my-laravel-app/artisan about
-./wari php my-laravel-app/artisan migrate:status
+./wari php artisan --version
+./wari php artisan about
+./wari php artisan migrate:status
 ```
 
 ## Composer scripts and development server
 
-From the directory containing `wari`:
-
 ```bash
-./wari composer --working-dir=my-laravel-app run dev
+./wari composer run dev
 ```
 
 Laravel's development script starts multiple child processes. Wari keeps its
@@ -38,14 +40,14 @@ requires Node.js and npm; Wari does not provide them.
 For a PHP-only server:
 
 ```bash
-./wari php -S 127.0.0.1:8080 -t my-laravel-app/public
+./wari php -S 127.0.0.1:8080 -t public
 curl -I http://127.0.0.1:8080
 ```
 
 ## Tests
 
 ```bash
-./wari composer --working-dir=my-laravel-app test
+./wari composer test
 ```
 
 ## Notes

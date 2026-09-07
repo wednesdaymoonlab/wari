@@ -6,8 +6,14 @@ current `php -S` translation.
 
 ## Install
 
+First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
+From `wari-bootstrap/`, run:
+
 ```bash
-./wari composer create-project codeigniter4/appstarter codeigniter-app
+./wari composer create-project codeigniter4/appstarter ../codeigniter-app
+mv wari .wari ../codeigniter-app/
+cd ../codeigniter-app
+rmdir ../wari-bootstrap
 ```
 
 ## CLI
@@ -15,9 +21,9 @@ current `php -S` translation.
 The `spark` file is a PHP entry point and works through Wari:
 
 ```bash
-./wari php codeigniter-app/spark
-./wari php codeigniter-app/spark routes
-./wari php codeigniter-app/spark config:check
+./wari php spark
+./wari php spark routes
+./wari php spark config:check
 ```
 
 ## Worker mode
@@ -25,15 +31,14 @@ The `spark` file is a PHP entry point and works through Wari:
 Install CodeIgniter's FrankenPHP worker files:
 
 ```bash
-./wari php codeigniter-app/spark worker:install
+./wari php spark worker:install
 ```
 
-Run from the application directory so relative paths in `Caddyfile` resolve
+Run from the application root so relative paths in `Caddyfile` resolve
 correctly:
 
 ```bash
-cd codeigniter-app
-../wari frankenphp run --config Caddyfile
+./wari frankenphp run --config Caddyfile
 ```
 
 In another terminal:
@@ -44,10 +49,8 @@ curl -I http://127.0.0.1:8080
 
 ## Tests
 
-From the directory containing `wari`:
-
 ```bash
-./wari composer --working-dir=codeigniter-app test
+./wari composer test
 ```
 
 ## Known limitation
@@ -55,7 +58,7 @@ From the directory containing `wari`:
 Do not use this as the Wari compatibility test server:
 
 ```bash
-./wari php codeigniter-app/spark serve
+./wari php spark serve
 ```
 
 `spark serve` launches native PHP's server with CodeIgniter's custom

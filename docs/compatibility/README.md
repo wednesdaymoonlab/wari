@@ -38,21 +38,65 @@ Status meanings:
 - **Not tested**: supported by the upstream project or planned, but not verified
   with Wari yet.
 
-## Command layout
+## Project-local layout
 
-The manual test workspace used one Wari installation with applications in child
-directories:
+The guides use Wari from the framework or CMS project root:
 
 ```text
-playground/
-├── wari
+example-app/
 ├── .wari/
-└── example-app/
+├── wari
+├── composer.json
+└── ...
 ```
 
-Commands run from `playground/` therefore use `./wari`; commands run from an
-application use `../wari`. In a normal repository where Wari is installed in
-the application root, replace `../wari` with `./wari`.
+All runtime commands therefore start with `./wari`. The generated `wari` and
+`.wari/` paths are local development tools; do not commit them with application
+source. Add both to the application's `.gitignore` when necessary:
+
+```gitignore
+/.wari/
+/wari
+```
+
+### Existing project
+
+For a cloned, downloaded, or otherwise existing project, install Wari directly
+in its root and install dependencies:
+
+```bash
+cd example-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari composer install
+```
+
+### New Composer project without global PHP
+
+Composer requires the `create-project` target to be empty. Installing Wari in
+the target first and then running `composer create-project ... .` does not work
+because `wari` and `.wari/` make the directory non-empty.
+
+Use a temporary bootstrap directory, create the application as its sibling,
+then move the relocatable Wari installation into the new project:
+
+```bash
+mkdir wari-bootstrap
+cd wari-bootstrap
+
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari composer create-project vendor/project ../example-app
+
+mv wari .wari ../example-app/
+cd ../example-app
+rmdir ../wari-bootstrap
+
+./wari php --version
+./wari composer --version
+```
+
+Replace `vendor/project` and `example-app` with the values shown in each guide.
+This flow was verified after relocation with CakePHP, PHP 8.5.10, and Composer
+2.10.3.
 
 Each guide separates observed results from upstream features that have not yet
 been tested. Stop any foreground server with `Ctrl-C` after verification.
