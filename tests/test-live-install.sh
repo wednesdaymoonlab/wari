@@ -73,6 +73,31 @@ if [[ "$("$PROJECT/wari" php -r 'echo $argv[1];' 'wari-eval-ok')" != 'wari-eval-
     exit 1
 fi
 
+CREATE_PROJECT="$LIVE_ROOT/create project"
+mkdir -p "$CREATE_PROJECT"
+cp -R "$PROJECT/.wari" "$CREATE_PROJECT/.wari"
+cp "$PROJECT/wari" "$CREATE_PROJECT/wari"
+chmod 755 "$CREATE_PROJECT/wari"
+
+(
+    cd "$CREATE_PROJECT"
+    ./wari create-project --yes composer/hello-world --no-interaction
+)
+
+if [[ ! -f "$CREATE_PROJECT/composer.json" ||
+    ! -x "$CREATE_PROJECT/wari" ||
+    ! -x "$CREATE_PROJECT/.wari/create-project" ]]; then
+    printf 'Live create-project layout is incomplete.\n' >&2
+    exit 1
+fi
+
+"$CREATE_PROJECT/wari" composer validate --no-interaction
+if find "$LIVE_ROOT" -maxdepth 1 -name '.create project.wari-create.*' \
+    -print -quit | grep -q .; then
+    printf 'Live create-project left a staging directory behind.\n' >&2
+    exit 1
+fi
+
 printf '%s\n' \
     '{' \
     '  "name": "wednesdaymoonlab/wari-live-test",' \

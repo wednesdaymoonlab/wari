@@ -4,14 +4,11 @@ Status: **Verified** with Slim 4.15.3 using the Slim Skeleton application.
 
 ## Install
 
-First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
-From `wari-bootstrap/`, run:
-
 ```bash
-./wari composer create-project slim/slim-skeleton ../slim-app
-mv wari .wari ../slim-app/
-cd ../slim-app
-rmdir ../wari-bootstrap
+mkdir slim-app
+cd slim-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project slim/slim-skeleton
 ```
 
 ## Development server

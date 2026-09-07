@@ -40,6 +40,34 @@ The installer refuses to continue if either `./wari` or `./.wari` already
 exists, including a symbolic link. It never updates, merges, or removes an
 existing runtime.
 
+### Create a new Composer project
+
+Start with an empty directory, install Wari, then ask the bundled Composer to
+create the project in that directory:
+
+```bash
+mkdir php-app
+cd php-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project vendor/project
+```
+
+Replace `vendor/project` with the Composer package to create. Wari displays the
+full destination path and asks for confirmation before downloading anything.
+At that point, the directory must contain only `wari` and `.wari/`.
+
+For automation, `--yes` skips Wari's confirmation. Composer interaction is
+controlled separately with Composer's `--no-interaction` option:
+
+```bash
+./wari create-project --yes vendor/project --no-interaction
+```
+
+Composer works in a temporary sibling directory so it receives an empty target.
+After a successful installation, Wari moves the completed project into the
+current directory. A failed installation removes the staged project and leaves
+the local Wari runtime unchanged.
+
 FrankenPHP and Composer downloads show curl's ASCII progress bar when standard
 error is connected to a terminal. CI runs and redirected output stay quiet while
 still reporting download errors and retries.
@@ -48,7 +76,7 @@ still reporting download errors and retries.
 
 ```bash
 ./wari php --version
-./wari php artisan migrate
+./wari php script.php
 ./wari php -S 127.0.0.1:8000 -t public
 ./wari composer install
 ./wari composer require vendor/package
@@ -74,7 +102,7 @@ remains relocatable. The PHP wrapper preserves its caller's working directory,
 sets `PHP_BINARY` to itself, and prepends `.wari/` to `PATH`. Composer package
 scripts and PHP programs that start child PHP processes therefore keep using
 the same project-local runtime and can resolve relative paths such as
-`artisan`.
+`scripts/task.php`.
 
 FrankenPHP `php-cli` does not support every native PHP CLI option. Wari removes
 `-d value` and `-dvalue` arguments so Composer remains compatible. Composer
@@ -139,6 +167,9 @@ GitHub CLI is optional and is never installed or invoked by Wari.
   yourself, then run the installer again. A power loss or `SIGKILL` during the
   two-path publication step can leave a complete `.wari/` without `wari`; Wari
   stops rather than overwriting that partial installation.
+- `./wari create-project` reports an unsupported entry: move the entry out of
+  the directory and retry. New-project creation intentionally accepts only the
+  installed `wari` and `.wari/` paths.
 - Composer reports a missing `ext-*`: the official static binary does not
   include that extension; Wari v1 cannot add it.
 - macOS blocks execution: review the downloaded artifact and local Gatekeeper

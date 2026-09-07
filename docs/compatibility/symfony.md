@@ -5,15 +5,13 @@ Status: **Verified** with Symfony 8.1.6.
 ## Install
 
 The tested application is a Symfony web application with Flex, Doctrine, Twig,
-AssetMapper, and PHPUnit installed through Composer. First create the
-[temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
-From `wari-bootstrap/`, run:
+AssetMapper, and PHPUnit installed through Composer.
 
 ```bash
-./wari composer create-project symfony/skeleton:"8.1.*" ../symfony-app
-mv wari .wari ../symfony-app/
-cd ../symfony-app
-rmdir ../wari-bootstrap
+mkdir symfony-app
+cd symfony-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project 'symfony/skeleton:8.1.*'
 ./wari composer require webapp
 ```
 

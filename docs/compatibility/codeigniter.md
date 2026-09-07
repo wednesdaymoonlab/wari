@@ -6,14 +6,11 @@ current `php -S` translation.
 
 ## Install
 
-First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
-From `wari-bootstrap/`, run:
-
 ```bash
-./wari composer create-project codeigniter4/appstarter ../codeigniter-app
-mv wari .wari ../codeigniter-app/
-cd ../codeigniter-app
-rmdir ../wari-bootstrap
+mkdir codeigniter-app
+cd codeigniter-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project codeigniter4/appstarter
 ```
 
 ## CLI

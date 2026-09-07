@@ -4,14 +4,11 @@ Status: **Verified** with Laravel Framework 13.30.1.
 
 ## Install
 
-First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
-From `wari-bootstrap/`, run:
-
 ```bash
-./wari composer create-project laravel/laravel ../laravel-project
-mv wari .wari ../laravel-project/
-cd ../laravel-project
-rmdir ../wari-bootstrap
+mkdir laravel-project
+cd laravel-project
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project laravel/laravel
 ```
 
 This exercises Composer archive extraction and Laravel's `@php` project-create

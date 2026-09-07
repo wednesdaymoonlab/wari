@@ -72,31 +72,20 @@ curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.
 
 ### New Composer project without global PHP
 
-Composer requires the `create-project` target to be empty. Installing Wari in
-the target first and then running `composer create-project ... .` does not work
-because `wari` and `.wari/` make the directory non-empty.
-
-Use a temporary bootstrap directory, create the application as its sibling,
-then move the relocatable Wari installation into the new project:
+Create an empty application directory, install Wari, and use Wari's dedicated
+wrapper:
 
 ```bash
-mkdir wari-bootstrap
-cd wari-bootstrap
-
+mkdir example-app
+cd example-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
-./wari composer create-project vendor/project ../example-app
-
-mv wari .wari ../example-app/
-cd ../example-app
-rmdir ../wari-bootstrap
-
-./wari php --version
-./wari composer --version
+./wari create-project vendor/project
 ```
 
 Replace `vendor/project` and `example-app` with the values shown in each guide.
-This flow was verified after relocation with CakePHP, PHP 8.5.10, and Composer
-2.10.3.
+Wari creates the Composer project in an automatically cleaned sibling staging
+directory, then publishes it beside `wari` and `.wari/`; no manual relocation
+is needed.
 
 Each guide separates observed results from upstream features that have not yet
 been tested. Stop any foreground server with `Ctrl-C` after verification.

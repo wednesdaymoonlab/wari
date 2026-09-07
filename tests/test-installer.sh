@@ -438,6 +438,7 @@ assert_eq '0' "$(WARI_PUBLIC_CAPTURE="$PUBLIC_SMOKE_CAPTURE" run_public_smoke_ch
 PUBLIC_SMOKE_CONTENT="$(<"$PUBLIC_SMOKE_CAPTURE")"
 assert_contains "$PUBLIC_SMOKE_CONTENT" 'php|--version' 'public smoke checks PHP version'
 assert_contains "$PUBLIC_SMOKE_CONTENT" 'composer|--version' 'public smoke checks Composer version'
+assert_contains "$PUBLIC_SMOKE_CONTENT" 'create-project|--help' 'public smoke checks create-project help'
 assert_contains "$PUBLIC_SMOKE_CONTENT" 'frankenphp|version' 'public smoke checks FrankenPHP version'
 assert_contains "$PUBLIC_SMOKE_CONTENT" "php|-r|" 'public smoke checks manifest through PHP'
 assert_contains "$PUBLIC_SMOKE_CONTENT" "$PUBLIC_SMOKE_PROJECT/.wari/manifest.json" 'public smoke checks hidden manifest path'
@@ -477,7 +478,8 @@ test_main_success() (
     install_composer() { printf 'fake composer' >"$1/runtime/composer.phar"; }
     main --yes --version 1.12.7 --linux-build static >"$project/install-output" || return 1
     [[ -x "$project/wari" && ! -d "$project/wari" ]] || return 2
-    [[ -x "$project/.wari/php" && -x "$project/.wari/composer" ]] || return 3
+    [[ -x "$project/.wari/php" && -x "$project/.wari/composer" &&
+        -x "$project/.wari/create-project" ]] || return 3
     [[ -x "$project/.wari/serve" && -x "$project/.wari/frankenphp" ]] || return 4
     [[ -f "$project/.wari/manifest.json" ]] || return 5
     [[ -x "$project/.wari/runtime/frankenphp" && -f "$project/.wari/runtime/composer.phar" ]] || return 6

@@ -797,6 +797,281 @@ export WARI_COMPOSER_CONTEXT=1
 exec "$WARI_DIR/php" "$WARI_DIR/runtime/composer.phar" "$@"
 WARI_COMPOSER
 
+    cat >"$wari_dir/create-project" <<'WARI_CREATE_PROJECT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+create_project_usage() {
+    printf '%s\n' \
+        'Usage: ./wari create-project [--yes] <package> [version] [composer-options]' \
+        '' \
+        'Create a Composer project in the current Wari project directory.' \
+        'Use --yes to accept Wari confirmation in automation.'
+}
+
+create_project_error() {
+    printf 'Error: %s\n' "$1" >&2
+}
+
+STAGING_DIR=''
+STAGING_PREFIX=''
+CURRENT_SOURCE=''
+CURRENT_DESTINATION=''
+CREATE_PROJECT_COMPLETE=0
+PUBLISHED_ENTRIES=()
+
+is_safe_create_staging() {
+    local path="$1"
+    local base
+
+    [[ -n "$STAGING_DIR" && "$path" == "$STAGING_DIR" ]] || return 1
+    [[ "$path" != "$PROJECT_ROOT" ]] || return 1
+    [[ "$(dirname -- "$path")" == "$PROJECT_PARENT" ]] || return 1
+    base="${path##*/}"
+    [[ "$base" == "$STAGING_PREFIX"?* && "$base" != "$STAGING_PREFIX" ]] ||
+        return 1
+    [[ -d "$path" && ! -L "$path" ]]
+}
+
+is_safe_published_entry() {
+    local path="$1"
+    local base
+
+    [[ "$(dirname -- "$path")" == "$PROJECT_ROOT" ]] || return 1
+    base="${path##*/}"
+    [[ -n "$base" && "$base" != wari && "$base" != .wari ]]
+}
+
+cleanup_create_project() {
+    local status=$?
+    local index path
+
+    trap - EXIT INT TERM
+
+    if [[ "$CREATE_PROJECT_COMPLETE" -ne 1 ]]; then
+        if [[ -n "$CURRENT_DESTINATION" &&
+            ! -e "$CURRENT_SOURCE" && ! -L "$CURRENT_SOURCE" &&
+            ( -e "$CURRENT_DESTINATION" || -L "$CURRENT_DESTINATION" ) ]]; then
+            if is_safe_published_entry "$CURRENT_DESTINATION"; then
+                rm -rf -- "$CURRENT_DESTINATION" || status=1
+            else
+                create_project_error \
+                    "refusing to remove unsafe published path: $CURRENT_DESTINATION"
+                status=1
+            fi
+        fi
+
+        index=$((${#PUBLISHED_ENTRIES[@]} - 1))
+        while ((index >= 0)); do
+            path="${PUBLISHED_ENTRIES[$index]}"
+            if is_safe_published_entry "$path"; then
+                rm -rf -- "$path" || status=1
+            else
+                create_project_error "refusing to remove unsafe published path: $path"
+                status=1
+            fi
+            index=$((index - 1))
+        done
+    fi
+
+    if [[ -n "$STAGING_DIR" && ( -e "$STAGING_DIR" || -L "$STAGING_DIR" ) ]]; then
+        if is_safe_create_staging "$STAGING_DIR"; then
+            rm -rf -- "$STAGING_DIR" || status=1
+        else
+            create_project_error "refusing to remove unsafe staging path: $STAGING_DIR"
+            status=1
+        fi
+    fi
+
+    exit "$status"
+}
+
+validate_project_root() {
+    local candidate name count=0
+
+    if [[ ! -d "$WARI_DIR" || -L "$WARI_DIR" ]]; then
+        create_project_error "Wari runtime directory is invalid: $WARI_DIR"
+        return 1
+    fi
+    if [[ ! -f "$PROJECT_ROOT/wari" || ! -x "$PROJECT_ROOT/wari" ||
+        -L "$PROJECT_ROOT/wari" ]]; then
+        create_project_error "Wari dispatcher is invalid: $PROJECT_ROOT/wari"
+        return 1
+    fi
+    if [[ ! -x "$WARI_DIR/php" || ! -x "$WARI_DIR/composer" ||
+        ! -x "$WARI_DIR/create-project" ||
+        ! -f "$WARI_DIR/runtime/composer.phar" ]]; then
+        create_project_error 'Wari runtime is incomplete'
+        return 1
+    fi
+
+    while IFS= read -r -d '' candidate; do
+        name="${candidate##*/}"
+        case "$name" in
+            wari|.wari) ;;
+            *)
+                create_project_error \
+                    "project directory contains an unsupported entry: $name"
+                return 1
+                ;;
+        esac
+        count=$((count + 1))
+    done < <(find "$PROJECT_ROOT" -mindepth 1 -maxdepth 1 -print0)
+
+    if [[ "$count" -ne 2 ]]; then
+        create_project_error 'project directory must contain only wari and .wari/'
+        return 1
+    fi
+}
+
+confirm_create_project() {
+    local answer
+
+    printf '%s\n\n  %s\n\n%s\n' \
+        'Wari will create a Composer project in:' \
+        "$PROJECT_ROOT" \
+        'Only ./wari and ./.wari/ will be preserved.' >&4
+    printf 'Continue? [y/N]: ' >&4
+    if ! IFS= read -r answer <&3; then
+        create_project_error 'interactive input ended unexpectedly'
+        return 1
+    fi
+    case "$answer" in
+        y|Y) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
+create_project_main() {
+    local argument package='' confirmation_status composer_status
+    local source name destination
+    local assume_yes=0
+    local -a filtered_arguments=()
+    local -a composer_arguments=()
+
+    if [[ "$#" -eq 1 ]]; then
+        case "$1" in
+            -h|--help)
+                create_project_usage
+                return 0
+                ;;
+        esac
+    fi
+
+    for argument in "$@"; do
+        case "$argument" in
+            --yes) assume_yes=1 ;;
+            *) filtered_arguments+=("$argument") ;;
+        esac
+    done
+
+    package="${filtered_arguments[0]-}"
+    if [[ -z "$package" || "$package" == -* ]]; then
+        create_project_usage >&2
+        return 2
+    fi
+    composer_arguments=("${filtered_arguments[@]:1}")
+
+    validate_project_root || return 1
+
+    if [[ "$assume_yes" -ne 1 ]]; then
+        if ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
+            create_project_error \
+                'interactive confirmation is unavailable; pass --yes for automation'
+            return 1
+        fi
+        if confirm_create_project; then
+            :
+        else
+            confirmation_status=$?
+            if [[ "$confirmation_status" -eq 2 ]]; then
+                printf 'Project creation cancelled.\n'
+                return 0
+            fi
+            return "$confirmation_status"
+        fi
+    fi
+
+    STAGING_PREFIX=".$PROJECT_NAME.wari-create."
+    STAGING_DIR="$(mktemp -d "${PROJECT_PARENT}/${STAGING_PREFIX}XXXXXX")" || {
+        create_project_error 'could not create the project staging directory'
+        return 1
+    }
+    trap cleanup_create_project EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    if ((${#composer_arguments[@]} > 0)); then
+        if "$WARI_DIR/composer" create-project "$package" "$STAGING_DIR" \
+            "${composer_arguments[@]}"; then
+            :
+        else
+            composer_status=$?
+            exit "$composer_status"
+        fi
+    else
+        if "$WARI_DIR/composer" create-project "$package" "$STAGING_DIR"; then
+            :
+        else
+            composer_status=$?
+            exit "$composer_status"
+        fi
+    fi
+
+    if [[ ! -f "$STAGING_DIR/composer.json" ]]; then
+        create_project_error 'Composer project did not create composer.json'
+        return 1
+    fi
+    if [[ -e "$STAGING_DIR/wari" || -L "$STAGING_DIR/wari" ||
+        -e "$STAGING_DIR/.wari" || -L "$STAGING_DIR/.wari" ]]; then
+        create_project_error 'Composer project conflicts with reserved Wari paths'
+        return 1
+    fi
+    validate_project_root || return 1
+
+    while IFS= read -r -d '' source; do
+        name="${source##*/}"
+        destination="$PROJECT_ROOT/$name"
+        if [[ -e "$destination" || -L "$destination" ]]; then
+            create_project_error \
+                "destination entry appeared during publication: $name"
+            return 1
+        fi
+        CURRENT_SOURCE="$source"
+        CURRENT_DESTINATION="$destination"
+        mv -- "$source" "$destination"
+        PUBLISHED_ENTRIES+=("$destination")
+        CURRENT_SOURCE=''
+        CURRENT_DESTINATION=''
+    done < <(find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -print0)
+
+    rmdir -- "$STAGING_DIR"
+    STAGING_DIR=''
+    PUBLISHED_ENTRIES=()
+    CREATE_PROJECT_COMPLETE=1
+    trap - EXIT INT TERM
+
+    printf '%s\n\n  %s\n\n%s\n%s\n%s\n' \
+        'Composer project created successfully in:' \
+        "$PROJECT_ROOT" \
+        'Wari is ready:' \
+        '  ./wari php --version' \
+        '  ./wari composer --version'
+}
+
+if [[ -n "${WARI_PROJECT_ROOT:-}" ]]; then
+    PROJECT_ROOT="$(CDPATH= cd -- "$WARI_PROJECT_ROOT" && pwd -P)"
+    WARI_DIR="$PROJECT_ROOT/.wari"
+else
+    WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$WARI_DIR")" && pwd -P)"
+fi
+PROJECT_PARENT="$(CDPATH= cd -- "$(dirname -- "$PROJECT_ROOT")" && pwd -P)"
+PROJECT_NAME="${PROJECT_ROOT##*/}"
+
+create_project_main "$@"
+WARI_CREATE_PROJECT
+
     cat >"$wari_dir/serve" <<'WARI_SERVE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -829,6 +1104,7 @@ WARI_FRANKENPHP
     chmod 755 \
         "$wari_dir/php" \
         "$wari_dir/composer" \
+        "$wari_dir/create-project" \
         "$wari_dir/serve" \
         "$wari_dir/frankenphp"
 }
@@ -852,6 +1128,7 @@ usage() {
         'Commands:' \
         '  php          Run project-local PHP' \
         '  composer     Run project-local Composer' \
+        '  create-project  Create a Composer project in this directory' \
         '  serve        Serve ./public at http://127.0.0.1:8000' \
         '  frankenphp   Run the bundled FrankenPHP binary' \
         '  help         Show this help'
@@ -859,6 +1136,7 @@ usage() {
 
 WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+export WARI_PROJECT_ROOT WARI_RUNTIME_DIR
 
 if [[ ! -d "$WARI_RUNTIME_DIR" ]]; then
     printf 'Error: Wari runtime directory does not exist: %s\n' "$WARI_RUNTIME_DIR" >&2
@@ -870,7 +1148,7 @@ case "$command_name" in
     ''|help|--help|-h)
         usage
         ;;
-    php|composer|serve|frankenphp)
+    php|composer|create-project|serve|frankenphp)
         shift
         exec "$WARI_RUNTIME_DIR/$command_name" "$@"
         ;;
@@ -989,6 +1267,7 @@ run_smoke_checks() {
 
     "$wari_dir/php" --version >/dev/null
     "$wari_dir/composer" --version >/dev/null
+    "$wari_dir/create-project" --help >/dev/null
     "$wari_dir/frankenphp" version >/dev/null
     "$wari_dir/php" -r \
         '$data = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); exit(is_array($data) ? 0 : 1);' \
@@ -1001,6 +1280,7 @@ run_public_smoke_checks() {
 
     "$dispatcher" php --version >/dev/null || return
     "$dispatcher" composer --version >/dev/null || return
+    "$dispatcher" create-project --help >/dev/null || return
     "$dispatcher" frankenphp version >/dev/null || return
     "$dispatcher" php -r \
         '$data = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); exit(is_array($data) ? 0 : 1);' \

@@ -5,14 +5,11 @@ are verified; web, database, and test-suite checks remain to be completed.
 
 ## Install
 
-First create the [temporary Wari bootstrap](README.md#new-composer-project-without-global-php).
-From `wari-bootstrap/`, run:
-
 ```bash
-./wari composer create-project --prefer-dist "cakephp/app:^5.0" ../cakephp-app
-mv wari .wari ../cakephp-app/
-cd ../cakephp-app
-rmdir ../wari-bootstrap
+mkdir cakephp-app
+cd cakephp-app
+curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari create-project "cakephp/app:^5.0" --prefer-dist
 ```
 
 ## CLI
