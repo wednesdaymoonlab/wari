@@ -36,10 +36,18 @@ jobs:
       - uses: actions/checkout@v6
       - name: Run offline installer tests
         shell: bash
-        run: bash tests/test-installer.sh
+        run: |
+          bash tests/test-lock.sh
+          bash tests/test-launcher.sh
+          bash tests/test-setup.sh
+          bash tests/test-update.sh
+          bash tests/test-initializer.sh
+          bash tests/test-installer.sh
       - name: Run offline wrapper tests
         shell: bash
-        run: bash tests/test-wrappers.sh
+        run: |
+          bash tests/test-wrappers.sh
+          bash tests/test-create-project.sh
 
   live:
     name: Live (${{ matrix.name }})
@@ -64,7 +72,7 @@ jobs:
             runner: macos-15-intel
             linux_build: static
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - name: Install and test real runtime

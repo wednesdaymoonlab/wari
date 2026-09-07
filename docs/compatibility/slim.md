@@ -8,6 +8,7 @@ Status: **Verified** with Slim 4.15.3 using the Slim Skeleton application.
 mkdir slim-app
 cd slim-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project slim/slim-skeleton
 ```
 

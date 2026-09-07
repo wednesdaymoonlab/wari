@@ -7,8 +7,8 @@ CORE_DIR="$(dirname -- "$TEST_DIR")"
 
 # shellcheck source=test-helper.sh
 source "$TEST_DIR/test-helper.sh"
-# shellcheck source=../install.sh
-source "$CORE_DIR/install.sh"
+# shellcheck source=../wari
+source "$CORE_DIR/wari"
 
 CREATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wari-create-project-test.XXXXXX")"
 CREATE_TMP="$(CDPATH= cd -- "$CREATE_TMP" && pwd -P)"
@@ -28,11 +28,49 @@ make_create_project_fixture() {
 
     mkdir -p "$wari/runtime"
     printf 'fake composer\n' >"$wari/runtime/composer.phar"
-    printf '#!/usr/bin/env bash\nexit 0\n' >"$wari/runtime/frankenphp"
+    cat >"$wari/runtime/frankenphp" <<'FAKE_FRANKENPHP'
+#!/usr/bin/env bash
+case "${1-}/${2-}/${3-}" in
+    php-cli/*php-proxy.php/version) printf 'PHP 8.4.0 (cli)\n' ;;
+    php-cli/*composer.phar/--version) printf 'Composer version 2.8.11 2025-01-01\n' ;;
+    version//) printf 'FrankenPHP v1.12.7\n' ;;
+esac
+exit 0
+FAKE_FRANKENPHP
     chmod 755 "$wari/runtime/frankenphp"
     generate_wrappers "$wari"
-    generate_dispatcher "$wari"
-    mv -- "$wari/wari" "$project/wari"
+    cp "$CORE_DIR/wari" "$project/wari"
+    cp "$CORE_DIR/wari.lock" "$project/wari.lock"
+    chmod 755 "$project/wari"
+    write_wari_ignore_block_for_test >"$project/.gitignore"
+    printf '%s\n' 'Wari runtime layout 2' >"$wari/.wari-owned"
+
+    local test_os test_arch linux_build_json lock_sha
+    case "$(uname -s)" in Linux) test_os='linux' ;; Darwin) test_os='darwin' ;; esac
+    case "$(uname -m)" in x86_64|amd64) test_arch='x86_64' ;; arm64|aarch64) test_arch='arm64' ;; esac
+    if [[ "$test_os" == 'linux' ]]; then linux_build_json='"static"'; else linux_build_json='null'; fi
+    lock_sha="$(lock_digest "$project/wari.lock")"
+    cat >"$wari/manifest.json" <<EOF
+{
+  "layout_version": 2,
+  "lock_sha256": "$lock_sha",
+  "wari_version": "0.2.0",
+  "frankenphp_version": "1.12.7",
+  "php_version": "8.4.0",
+  "composer_version": "2.8.11",
+  "os": "$test_os",
+  "architecture": "$test_arch",
+  "linux_build": $linux_build_json,
+  "checksum_verified": true,
+  "slsa_verified": false
+}
+EOF
+}
+
+write_wari_ignore_block_for_test() {
+    printf '%s\n' \
+        '# Wari local runtime' '/.wari/' '/.wari-install.*' \
+        '/.wari-backup.*' '/.wari-update.*' '/.wari-setup.lock'
 }
 
 write_fake_composer() {
@@ -41,6 +79,11 @@ write_fake_composer() {
     cat >"$destination" <<'FAKE_COMPOSER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
+if [[ "${1-}" == '--version' ]]; then
+    printf 'Composer version 2.8.11 2025-01-01\n'
+    exit 0
+fi
 
 capture="${FAKE_COMPOSER_CAPTURE:?}"
 printf 'argc=%s\n' "$#" >"$capture"
@@ -85,6 +128,10 @@ case "${FAKE_COMPOSER_MODE:-success}" in
         printf '<?php\n' >"$target/src/App.php"
         printf '[core]\n' >"$target/.git/config"
         ;;
+    success-gitignore)
+        printf '{"name":"vendor/project"}\n' >"$target/composer.json"
+        printf '/vendor/\n' >"$target/.gitignore"
+        ;;
 esac
 FAKE_COMPOSER
     chmod 755 "$destination"
@@ -95,10 +142,23 @@ WARI="$PROJECT/.wari"
 DISPATCHER="$PROJECT/wari"
 make_create_project_fixture "$PROJECT"
 
-assert_eq '2' "$(find "$PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
-    'create-project fixture starts with exactly two root entries'
+assert_eq '4' "$(find "$PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+    'create-project fixture starts with four managed root entries'
 assert_eq '0' "$(test -x "$WARI/create-project"; printf '%s' "$?")" \
     'wrapper generator creates executable create-project command'
+
+printf '/custom-rule/\n' >>"$PROJECT/.gitignore"
+set +e
+CUSTOM_IGNORE_OUTPUT="$("$DISPATCHER" create-project --yes vendor/project 2>&1)"
+CUSTOM_IGNORE_STATUS=$?
+set -e
+assert_eq '1' "$CUSTOM_IGNORE_STATUS" \
+    'create-project rejects custom bootstrap ignore content'
+assert_contains "$CUSTOM_IGNORE_OUTPUT" 'bootstrap .gitignore is invalid' \
+    'custom bootstrap ignore failure is explicit'
+assert_contains "$(<"$PROJECT/.gitignore")" '/custom-rule/' \
+    'create-project preserves rejected custom ignore content'
+write_wari_ignore_block_for_test >"$PROJECT/.gitignore"
 
 HELP_OUTPUT="$("$DISPATCHER" --help)"
 assert_contains "$HELP_OUTPUT" 'create-project' 'dispatcher help lists create-project'
@@ -147,7 +207,7 @@ INCOMPLETE_OUTPUT="$(
 INCOMPLETE_STATUS=$?
 set -e
 assert_eq '1' "$INCOMPLETE_STATUS" 'create-project rejects an incomplete runtime'
-assert_contains "$INCOMPLETE_OUTPUT" 'Wari runtime is incomplete' \
+assert_contains "$INCOMPLETE_OUTPUT" 'incomplete' \
     'incomplete runtime failure is explicit'
 
 NONEXEC_PROJECT="$CREATE_TMP/nonexec-dispatcher"
@@ -190,7 +250,7 @@ SYMLINK_RUNTIME_OUTPUT="$(
 SYMLINK_RUNTIME_STATUS=$?
 set -e
 assert_eq '1' "$SYMLINK_RUNTIME_STATUS" 'create-project rejects a symbolic-link runtime'
-assert_contains "$SYMLINK_RUNTIME_OUTPUT" 'Wari runtime directory is invalid' \
+assert_contains "$SYMLINK_RUNTIME_OUTPUT" 'not recognized' \
     'symbolic-link runtime failure is explicit'
 
 SOURCEABLE_CREATE_PROJECT="$CREATE_TMP/create-project-functions"
@@ -274,6 +334,24 @@ assert_contains "$SUCCESS_OUTPUT" './wari php --version' \
 assert_eq '' "$(find "$CREATE_TMP" -maxdepth 1 -name '.success app.wari-create.*' -print -quit)" \
     'create-project removes its sibling staging directory'
 
+IGNORE_PROJECT="$CREATE_TMP/package-ignore"
+IGNORE_WARI="$IGNORE_PROJECT/.wari"
+IGNORE_CAPTURE="$CREATE_TMP/package-ignore.capture"
+make_create_project_fixture "$IGNORE_PROJECT"
+write_fake_composer "$IGNORE_WARI/composer"
+set +e
+FAKE_COMPOSER_CAPTURE="$IGNORE_CAPTURE" FAKE_COMPOSER_MODE='success-gitignore' \
+    "$IGNORE_PROJECT/wari" create-project --yes vendor/project >/dev/null 2>&1
+IGNORE_STATUS=$?
+set -e
+assert_eq '0' "$IGNORE_STATUS" 'create-project merges a package gitignore'
+assert_contains "$(<"$IGNORE_PROJECT/.gitignore")" '/vendor/' \
+    'create-project preserves package ignore rules'
+assert_contains "$(<"$IGNORE_PROJECT/.gitignore")" '/.wari/' \
+    'create-project preserves Wari runtime ignore rules'
+assert_eq '1' "$(awk '$0 == "# Wari local runtime" { count++ } END { print count + 0 }' \
+    "$IGNORE_PROJECT/.gitignore")" 'create-project writes one Wari ignore block'
+
 run_failure_case() {
     local label="$1"
     local mode="$2"
@@ -306,25 +384,25 @@ run_failure_case() {
 }
 
 run_failure_case 'composer-failure' fail 17
-assert_eq '2' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'Composer failure leaves only Wari entries'
 
 run_failure_case 'missing-composer-json' missing-composer-json 1
 assert_contains "$FAILURE_OUTPUT" 'did not create composer.json' \
     'create-project explains a missing composer.json'
-assert_eq '2' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'validation failure leaves only Wari entries'
 
 run_failure_case 'wari-collision' wari-collision 1
 assert_contains "$FAILURE_OUTPUT" 'reserved Wari paths' \
     'create-project rejects a staged wari collision'
-assert_eq '2' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'wari collision cannot replace runtime entries'
 
 run_failure_case 'runtime-collision' runtime-collision 1
 assert_contains "$FAILURE_OUTPUT" 'reserved Wari paths' \
     'create-project rejects a staged .wari collision'
-assert_eq '2' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$FAILURE_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'runtime collision cannot replace runtime entries'
 
 run_failure_case 'concurrent-entry' concurrent-entry 1
@@ -398,7 +476,7 @@ FAKE_BLOCK_CAPTURE="$SIGNAL_BLOCK_CAPTURE" \
 SIGNAL_COMMAND_PID=$!
 
 SIGNAL_ATTEMPT=0
-while [[ ! -s "$SIGNAL_BLOCK_CAPTURE" && "$SIGNAL_ATTEMPT" -lt 100 ]]; do
+while [[ ! -s "$SIGNAL_BLOCK_CAPTURE" && "$SIGNAL_ATTEMPT" -lt 500 ]]; do
     sleep 0.02
     SIGNAL_ATTEMPT=$((SIGNAL_ATTEMPT + 1))
 done
@@ -414,7 +492,7 @@ set -e
 assert_eq '143' "$SIGNAL_STATUS" 'TERM returns the conventional signal status'
 assert_eq '0' "$(test ! -e "$SIGNAL_STAGING"; printf '%s' "$?")" \
     'TERM removes the active staging directory'
-assert_eq '2' "$(find "$SIGNAL_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$SIGNAL_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'TERM leaves only Wari entries'
 
 INT_PROJECT="$CREATE_TMP/int-cleanup"
@@ -429,7 +507,7 @@ write_fake_composer "$INT_WARI/composer"
 (
     attempt=0
     while { [[ ! -s "$INT_COMMAND_PID_CAPTURE" ]] ||
-        [[ ! -s "$INT_BLOCK_CAPTURE" ]]; } && ((attempt < 100)); do
+        [[ ! -s "$INT_BLOCK_CAPTURE" ]]; } && ((attempt < 500)); do
         sleep 0.02
         attempt=$((attempt + 1))
     done
@@ -456,7 +534,7 @@ assert_eq '0' "$(test -s "$INT_BLOCK_CAPTURE"; printf '%s' "$?")" \
 INT_STAGING="$(sed -n '1p' "$INT_BLOCK_CAPTURE")"
 assert_eq '0' "$(test ! -e "$INT_STAGING"; printf '%s' "$?")" \
     'INT removes the active staging directory'
-assert_eq '2' "$(find "$INT_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
+assert_eq '4' "$(find "$INT_PROJECT" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')" \
     'INT leaves only Wari entries'
 
 finish_tests

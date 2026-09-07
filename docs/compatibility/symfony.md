@@ -11,6 +11,7 @@ AssetMapper, and PHPUnit installed through Composer.
 mkdir symfony-app
 cd symfony-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project 'symfony/skeleton:8.1.*'
 ./wari composer require webapp
 ```

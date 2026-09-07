@@ -11,6 +11,7 @@ TEST_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CORE_DIR="$(dirname -- "$TEST_DIR")"
 LIVE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/wari-live-test.XXXXXX")"
 SERVER_PID=''
+LIVE_LOCK="$CORE_DIR/wari.lock"
 
 cleanup_live_test() {
     local status=$?
@@ -28,6 +29,21 @@ trap cleanup_live_test EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+case "${WARI_LINUX_BUILD:-static}" in
+    static|gnu) ;;
+    *) printf 'Invalid WARI_LINUX_BUILD: %s\n' "$WARI_LINUX_BUILD" >&2; exit 2 ;;
+esac
+
+if [[ "$(uname -s)" == 'Linux' && "${WARI_LINUX_BUILD:-static}" == 'gnu' ]]; then
+    LOCK_WARI_VERSION="$(awk -F= '$1 == "wari_version" { print $2 }' "$CORE_DIR/wari.lock")"
+    LOCK_FRANKENPHP_VERSION="$(awk -F= '$1 == "frankenphp_version" { print $2 }' "$CORE_DIR/wari.lock")"
+    LOCK_COMPOSER_VERSION="$(awk -F= '$1 == "composer_version" { print $2 }' "$CORE_DIR/wari.lock")"
+    LIVE_LOCK="$LIVE_ROOT/wari-gnu.lock"
+    "$CORE_DIR/tools/generate-lock.sh" \
+        "$LOCK_WARI_VERSION" "$LOCK_FRANKENPHP_VERSION" \
+        "$LOCK_COMPOSER_VERSION" gnu >"$LIVE_LOCK"
+fi
+
 if curl --silent --output /dev/null --max-time 1 'http://127.0.0.1:8000/' 2>/dev/null; then
     printf 'Port 8000 is already occupied; live test cannot safely run.\n' >&2
     exit 1
@@ -40,11 +56,16 @@ printf '%s\n' '<?php echo "wari-live-ok";' >"$PROJECT/public/index.php"
 
 (
     cd "$PROJECT"
-    if [[ "${WARI_TRACE_INSTALL:-0}" == '1' ]]; then
-        bash -x ./install.sh --yes --linux-build "${WARI_LINUX_BUILD:-static}"
-    else
-        bash ./install.sh --yes --linux-build "${WARI_LINUX_BUILD:-static}"
-    fi
+    # shellcheck source=../install.sh
+    source ./install.sh
+    fetch_tracked_files() {
+        cp "$CORE_DIR/wari" "$1/wari"
+        cp "$LIVE_LOCK" "$1/wari.lock"
+        chmod 755 "$1/wari"
+    }
+    initializer_main --yes
+    ./wari setup --yes
+    ./wari setup --yes
 )
 
 if [[ ! -x "$PROJECT/wari" || -d "$PROJECT/wari" ]]; then
@@ -77,6 +98,8 @@ CREATE_PROJECT="$LIVE_ROOT/create project"
 mkdir -p "$CREATE_PROJECT"
 cp -R "$PROJECT/.wari" "$CREATE_PROJECT/.wari"
 cp "$PROJECT/wari" "$CREATE_PROJECT/wari"
+cp "$PROJECT/wari.lock" "$CREATE_PROJECT/wari.lock"
+cp "$PROJECT/.gitignore" "$CREATE_PROJECT/.gitignore"
 chmod 755 "$CREATE_PROJECT/wari"
 
 (

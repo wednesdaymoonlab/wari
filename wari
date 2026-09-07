@@ -1,0 +1,1595 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+WARI_VERSION='0.2.0'
+WARI_RUNTIME_OWNER='Wari runtime layout 2'
+
+die() {
+    printf 'Error: %s\n' "$1" >&2
+    return 1
+}
+
+reset_lock_state() {
+    LOCK_VERSION=''
+    LOCK_WARI_VERSION=''
+    LOCK_FRANKENPHP_VERSION=''
+    LOCK_COMPOSER_VERSION=''
+    LOCK_LINUX_BUILD=''
+    LOCK_WARI_SHA256=''
+    LOCK_COMPOSER_INSTALLER_SHA384=''
+    LOCK_COMPOSER_SHA256=''
+    LOCK_FRANKENPHP_LINUX_X86_64_SHA256=''
+    LOCK_FRANKENPHP_LINUX_ARM64_SHA256=''
+    LOCK_FRANKENPHP_MACOS_X86_64_SHA256=''
+    LOCK_FRANKENPHP_MACOS_ARM64_SHA256=''
+
+    SEEN_LOCK_VERSION=0
+    SEEN_WARI_VERSION=0
+    SEEN_FRANKENPHP_VERSION=0
+    SEEN_COMPOSER_VERSION=0
+    SEEN_LINUX_BUILD=0
+    SEEN_WARI_SHA256=0
+    SEEN_COMPOSER_INSTALLER_SHA384=0
+    SEEN_COMPOSER_SHA256=0
+    SEEN_FRANKENPHP_LINUX_X86_64_SHA256=0
+    SEEN_FRANKENPHP_LINUX_ARM64_SHA256=0
+    SEEN_FRANKENPHP_MACOS_X86_64_SHA256=0
+    SEEN_FRANKENPHP_MACOS_ARM64_SHA256=0
+}
+
+assign_lock_value() {
+    local key="$1"
+    local value="$2"
+
+    case "$key" in
+        lock_version)
+            [[ "$SEEN_LOCK_VERSION" -eq 0 ]] || return 1
+            SEEN_LOCK_VERSION=1
+            LOCK_VERSION="$value"
+            ;;
+        wari_version)
+            [[ "$SEEN_WARI_VERSION" -eq 0 ]] || return 1
+            SEEN_WARI_VERSION=1
+            LOCK_WARI_VERSION="$value"
+            ;;
+        frankenphp_version)
+            [[ "$SEEN_FRANKENPHP_VERSION" -eq 0 ]] || return 1
+            SEEN_FRANKENPHP_VERSION=1
+            LOCK_FRANKENPHP_VERSION="$value"
+            ;;
+        composer_version)
+            [[ "$SEEN_COMPOSER_VERSION" -eq 0 ]] || return 1
+            SEEN_COMPOSER_VERSION=1
+            LOCK_COMPOSER_VERSION="$value"
+            ;;
+        linux_build)
+            [[ "$SEEN_LINUX_BUILD" -eq 0 ]] || return 1
+            SEEN_LINUX_BUILD=1
+            LOCK_LINUX_BUILD="$value"
+            ;;
+        wari_sha256)
+            [[ "$SEEN_WARI_SHA256" -eq 0 ]] || return 1
+            SEEN_WARI_SHA256=1
+            LOCK_WARI_SHA256="$value"
+            ;;
+        composer_installer_sha384)
+            [[ "$SEEN_COMPOSER_INSTALLER_SHA384" -eq 0 ]] || return 1
+            SEEN_COMPOSER_INSTALLER_SHA384=1
+            LOCK_COMPOSER_INSTALLER_SHA384="$value"
+            ;;
+        composer_sha256)
+            [[ "$SEEN_COMPOSER_SHA256" -eq 0 ]] || return 1
+            SEEN_COMPOSER_SHA256=1
+            LOCK_COMPOSER_SHA256="$value"
+            ;;
+        frankenphp_linux_x86_64_sha256)
+            [[ "$SEEN_FRANKENPHP_LINUX_X86_64_SHA256" -eq 0 ]] || return 1
+            SEEN_FRANKENPHP_LINUX_X86_64_SHA256=1
+            LOCK_FRANKENPHP_LINUX_X86_64_SHA256="$value"
+            ;;
+        frankenphp_linux_arm64_sha256)
+            [[ "$SEEN_FRANKENPHP_LINUX_ARM64_SHA256" -eq 0 ]] || return 1
+            SEEN_FRANKENPHP_LINUX_ARM64_SHA256=1
+            LOCK_FRANKENPHP_LINUX_ARM64_SHA256="$value"
+            ;;
+        frankenphp_macos_x86_64_sha256)
+            [[ "$SEEN_FRANKENPHP_MACOS_X86_64_SHA256" -eq 0 ]] || return 1
+            SEEN_FRANKENPHP_MACOS_X86_64_SHA256=1
+            LOCK_FRANKENPHP_MACOS_X86_64_SHA256="$value"
+            ;;
+        frankenphp_macos_arm64_sha256)
+            [[ "$SEEN_FRANKENPHP_MACOS_ARM64_SHA256" -eq 0 ]] || return 1
+            SEEN_FRANKENPHP_MACOS_ARM64_SHA256=1
+            LOCK_FRANKENPHP_MACOS_ARM64_SHA256="$value"
+            ;;
+        *)
+            die "unknown Wari lock key: $key"
+            return 1
+            ;;
+    esac
+}
+
+validate_complete_lock() {
+    local seen
+
+    for seen in \
+        "$SEEN_LOCK_VERSION" \
+        "$SEEN_WARI_VERSION" \
+        "$SEEN_FRANKENPHP_VERSION" \
+        "$SEEN_COMPOSER_VERSION" \
+        "$SEEN_LINUX_BUILD" \
+        "$SEEN_WARI_SHA256" \
+        "$SEEN_COMPOSER_INSTALLER_SHA384" \
+        "$SEEN_COMPOSER_SHA256" \
+        "$SEEN_FRANKENPHP_LINUX_X86_64_SHA256" \
+        "$SEEN_FRANKENPHP_LINUX_ARM64_SHA256" \
+        "$SEEN_FRANKENPHP_MACOS_X86_64_SHA256" \
+        "$SEEN_FRANKENPHP_MACOS_ARM64_SHA256"; do
+        if [[ "$seen" -ne 1 ]]; then
+            die 'Wari lock is missing one or more required keys'
+            return 1
+        fi
+    done
+
+    [[ "$LOCK_VERSION" == '1' ]] || {
+        die "unsupported Wari lock version: $LOCK_VERSION"
+        return 1
+    }
+    [[ "$LOCK_WARI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_COMPOSER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_LINUX_BUILD" == 'static' || "$LOCK_LINUX_BUILD" == 'gnu' ]] || return 1
+    [[ "$LOCK_WARI_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$LOCK_COMPOSER_INSTALLER_SHA384" =~ ^[0-9a-f]{96}$ ]] || return 1
+    [[ "$LOCK_COMPOSER_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_LINUX_X86_64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_LINUX_ARM64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_MACOS_X86_64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_MACOS_ARM64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+}
+
+parse_lock() {
+    local path="$1"
+    local line
+    local key
+    local value
+
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        die "invalid Wari lock: $path"
+        return 1
+    fi
+
+    reset_lock_state
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ ! "$line" =~ ^[a-z0-9_]+=[^[:space:][:cntrl:]]+$ ]]; then
+            die 'invalid Wari lock line'
+            return 1
+        fi
+        key="${line%%=*}"
+        value="${line#*=}"
+        assign_lock_value "$key" "$value" || return 1
+    done <"$path"
+
+    validate_complete_lock
+}
+
+select_locked_asset() {
+    case "${PLATFORM_OS:-}/${PLATFORM_ARCH:-}" in
+        linux/x86_64)
+            ASSET_NAME='frankenphp-linux-x86_64'
+            [[ "$LOCK_LINUX_BUILD" == 'static' ]] || ASSET_NAME="$ASSET_NAME-gnu"
+            ASSET_SHA256="$LOCK_FRANKENPHP_LINUX_X86_64_SHA256"
+            ;;
+        linux/arm64)
+            ASSET_NAME='frankenphp-linux-aarch64'
+            [[ "$LOCK_LINUX_BUILD" == 'static' ]] || ASSET_NAME="$ASSET_NAME-gnu"
+            ASSET_SHA256="$LOCK_FRANKENPHP_LINUX_ARM64_SHA256"
+            ;;
+        darwin/x86_64)
+            ASSET_NAME='frankenphp-mac-x86_64'
+            ASSET_SHA256="$LOCK_FRANKENPHP_MACOS_X86_64_SHA256"
+            ;;
+        darwin/arm64)
+            ASSET_NAME='frankenphp-mac-arm64'
+            ASSET_SHA256="$LOCK_FRANKENPHP_MACOS_ARM64_SHA256"
+            ;;
+        *)
+            die "unsupported Wari platform: ${PLATFORM_OS:-unknown} ${PLATFORM_ARCH:-unknown}"
+            return 1
+            ;;
+    esac
+}
+
+has_glibc() {
+    local output
+
+    if command -v getconf >/dev/null 2>&1; then
+        output="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+        [[ "$output" == glibc\ * ]] && return 0
+    fi
+    if command -v ldd >/dev/null 2>&1; then
+        output="$(ldd --version 2>&1 || true)"
+        [[ "$output" == *glibc* || "$output" == *GLIBC* ||
+            "$output" == *'GNU libc'* ]] && return 0
+    fi
+    return 1
+}
+
+can_show_download_progress() {
+    [[ -t 2 ]]
+}
+
+curl_to_file() {
+    local url="$1"
+    local destination="$2"
+    local progress_label="$3"
+    shift 3
+    local attempt=1
+    local max_attempts=4
+    local status
+    local -a output_options
+
+    while ((attempt <= max_attempts)); do
+        if [[ -n "$progress_label" ]] && can_show_download_progress; then
+            if ((attempt == 1)); then
+                printf 'Downloading %s\n' "$progress_label" >&2
+            else
+                printf 'Downloading %s (attempt %s/%s)\n' \
+                    "$progress_label" "$attempt" "$max_attempts" >&2
+            fi
+            output_options=(--progress-bar)
+        else
+            output_options=(--silent)
+        fi
+
+        if curl --fail --show-error "${output_options[@]}" --location \
+            --connect-timeout 15 "$@" "$url" -o "$destination"; then
+            return 0
+        else
+            status=$?
+        fi
+        if ((attempt == max_attempts)); then
+            die "download failed after $max_attempts attempts (curl exit $status): $url"
+            return "$status"
+        fi
+        printf 'Download failed (attempt %s/%s); retrying...\n' "$attempt" "$max_attempts" >&2
+        sleep "$attempt"
+        attempt=$((attempt + 1))
+    done
+}
+
+download_file() {
+    local url="$1"
+    local destination="$2"
+    local progress_label="${3-}"
+
+    case "$url" in
+        https://api.github.com/*|https://github.com/*|https://getcomposer.org/*|https://composer.github.io/*) ;;
+        *)
+            die "refusing download from unsupported URL: $url"
+            return 1
+            ;;
+    esac
+
+    curl_to_file "$url" "$destination" "$progress_label"
+}
+
+verify_checksum() {
+    local algorithm="$1"
+    local expected="$2"
+    local file="$3"
+    local actual
+
+    actual="$(calculate_checksum "$algorithm" "$file")" || return 1
+    if [[ "$actual" != "$expected" ]]; then
+        printf 'Error: %s checksum mismatch.\nExpected: %s\nActual:   %s\n' \
+            "$algorithm" "$expected" "$actual" >&2
+        return 1
+    fi
+}
+
+install_locked_frankenphp() {
+    local staging="$1"
+    local runtime_dir="$staging/runtime"
+    local download="$runtime_dir/frankenphp.download"
+    local url
+
+    mkdir -p "$runtime_dir"
+    select_locked_asset || return 1
+    url="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
+    download_file "$url" "$download" "FrankenPHP $LOCK_FRANKENPHP_VERSION" || return 1
+    verify_checksum sha256 "$ASSET_SHA256" "$download" || return 1
+    mv -- "$download" "$runtime_dir/frankenphp"
+    chmod 755 "$runtime_dir/frankenphp"
+}
+
+install_locked_composer() {
+    local staging="$1"
+    local runtime_dir="$staging/runtime"
+    local setup="$staging/composer-setup.php"
+    local output
+
+    if [[ ! -x "$runtime_dir/frankenphp" ]]; then
+        die 'FrankenPHP must be installed before Composer'
+        return 1
+    fi
+    download_file 'https://getcomposer.org/installer' "$setup" 'Composer installer' || return 1
+    verify_checksum sha384 "$LOCK_COMPOSER_INSTALLER_SHA384" "$setup" || return 1
+    "$runtime_dir/frankenphp" php-cli "$setup" \
+        --quiet \
+        "--version=$LOCK_COMPOSER_VERSION" \
+        "--install-dir=$runtime_dir" \
+        --filename=composer.phar || return 1
+    if [[ ! -f "$runtime_dir/composer.phar" || -L "$runtime_dir/composer.phar" ]]; then
+        die 'Composer installer did not create a regular composer.phar'
+        return 1
+    fi
+    verify_checksum sha256 "$LOCK_COMPOSER_SHA256" \
+        "$runtime_dir/composer.phar" || return 1
+    output="$("$runtime_dir/frankenphp" php-cli \
+        "$runtime_dir/composer.phar" --version)" || return 1
+    if [[ "$output" != "Composer version $LOCK_COMPOSER_VERSION"* ]]; then
+        die "installed Composer version does not match wari.lock: $output"
+        return 1
+    fi
+    rm -f -- "$setup"
+}
+
+json_escape() {
+    local value="$1"
+
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\t'/\\t}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\n'/\\n}"
+    printf '%s' "$value"
+}
+
+write_manifest() {
+    local wari_dir="$1"
+    local installed_at
+    local linux_build_json='null'
+    local asset_url
+
+    installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    if [[ "$PLATFORM_OS" == 'linux' ]]; then
+        linux_build_json="\"$(json_escape "$LOCK_LINUX_BUILD")\""
+    fi
+    asset_url="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
+
+    printf '%s\n' "$WARI_RUNTIME_OWNER" >"$wari_dir/.wari-owned"
+    {
+        printf '{\n'
+        printf '  "layout_version": 2,\n'
+        printf '  "lock_sha256": "%s",\n' "$(json_escape "$LOCK_SHA256")"
+        printf '  "wari_version": "%s",\n' "$(json_escape "$LOCK_WARI_VERSION")"
+        printf '  "frankenphp_version": "%s",\n' "$(json_escape "$INSTALLED_FRANKENPHP_VERSION")"
+        printf '  "php_version": "%s",\n' "$(json_escape "$INSTALLED_PHP_VERSION")"
+        printf '  "composer_version": "%s",\n' "$(json_escape "$INSTALLED_COMPOSER_VERSION")"
+        printf '  "os": "%s",\n' "$(json_escape "$PLATFORM_OS")"
+        printf '  "architecture": "%s",\n' "$(json_escape "$PLATFORM_ARCH")"
+        printf '  "linux_build": %s,\n' "$linux_build_json"
+        printf '  "asset": "%s",\n' "$(json_escape "$ASSET_NAME")"
+        printf '  "asset_url": "%s",\n' "$(json_escape "$asset_url")"
+        printf '  "asset_sha256": "%s",\n' "$(json_escape "$ASSET_SHA256")"
+        printf '  "composer_sha256": "%s",\n' "$(json_escape "$LOCK_COMPOSER_SHA256")"
+        printf '  "checksum_verified": true,\n'
+        printf '  "slsa_verified": false,\n'
+        printf '  "installed_at": "%s"\n' "$(json_escape "$installed_at")"
+        printf '}\n'
+    } >"$wari_dir/manifest.json"
+}
+
+run_staged_smoke_checks() {
+    local wari_dir="$1"
+
+    "$wari_dir/php" --version >/dev/null
+    "$wari_dir/composer" --version >/dev/null
+    "$wari_dir/create-project" --help >/dev/null
+    "$wari_dir/frankenphp" version >/dev/null
+    "$wari_dir/php" -r \
+        '$data = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR); exit(is_array($data) ? 0 : 1);' \
+        "$wari_dir/manifest.json" >/dev/null
+}
+
+detect_installed_versions() {
+    local wari_dir="$1"
+    local output
+
+    output="$("$wari_dir/php" --version)" || return 1
+    INSTALLED_PHP_VERSION="$(printf '%s\n' "$output" | sed -n \
+        's/^PHP \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | sed -n '1p')"
+    output="$("$wari_dir/frankenphp" version)" || return 1
+    INSTALLED_FRANKENPHP_VERSION="$(printf '%s\n' "$output" | sed -n \
+        's/.*FrankenPHP v\{0,1\}\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | sed -n '1p')"
+    output="$("$wari_dir/composer" --version)" || return 1
+    INSTALLED_COMPOSER_VERSION="$(printf '%s\n' "$output" | sed -n \
+        's/^Composer version \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | sed -n '1p')"
+    [[ -n "$INSTALLED_PHP_VERSION" &&
+        "$INSTALLED_FRANKENPHP_VERSION" == "$LOCK_FRANKENPHP_VERSION" &&
+        "$INSTALLED_COMPOSER_VERSION" == "$LOCK_COMPOSER_VERSION" ]] || {
+        die 'installed runtime versions do not match wari.lock'
+        return 1
+    }
+}
+
+is_safe_setup_path() {
+    local project_root="$1"
+    local path="$2"
+    local prefix="$3"
+    local parent
+    local base
+
+    [[ -n "$project_root" && -n "$path" ]] || return 1
+    parent="$(dirname -- "$path")"
+    base="$(basename -- "$path")"
+    [[ "$parent" == "$project_root" && "$base" == "$prefix".?* ]]
+}
+
+is_recognized_runtime() {
+    local runtime_dir="$1"
+
+    [[ -d "$runtime_dir" && ! -L "$runtime_dir" &&
+        -f "$runtime_dir/.wari-owned" && ! -L "$runtime_dir/.wari-owned" &&
+        -f "$runtime_dir/manifest.json" && ! -L "$runtime_dir/manifest.json" ]] || return 1
+    [[ "$(<"$runtime_dir/.wari-owned")" == "$WARI_RUNTIME_OWNER" &&
+        "$(manifest_integer "$runtime_dir/manifest.json" layout_version)" == '2' ]]
+}
+
+cleanup_setup() {
+    local status=$?
+
+    if [[ "${NEW_RUNTIME_PUBLISHED:-0}" -eq 1 &&
+        "${OLD_RUNTIME_BACKED_UP:-0}" -eq 1 ]]; then
+        if is_recognized_runtime "$WARI_PROJECT_ROOT/.wari" &&
+            is_safe_setup_path "$WARI_PROJECT_ROOT" "$RUNTIME_BACKUP" '.wari-backup'; then
+            rm -rf -- "$WARI_PROJECT_ROOT/.wari"
+            mv -- "$RUNTIME_BACKUP" "$WARI_PROJECT_ROOT/.wari"
+            OLD_RUNTIME_BACKED_UP=0
+        fi
+    elif [[ "${NEW_RUNTIME_PUBLISHED:-0}" -eq 1 &&
+        "${OLD_RUNTIME_BACKED_UP:-0}" -eq 0 ]]; then
+        if is_recognized_runtime "$WARI_PROJECT_ROOT/.wari"; then
+            rm -rf -- "$WARI_PROJECT_ROOT/.wari"
+        fi
+    fi
+    if [[ -n "${SETUP_STAGING:-}" && -d "$SETUP_STAGING" ]] &&
+        is_safe_setup_path "$WARI_PROJECT_ROOT" "$SETUP_STAGING" '.wari-install'; then
+        rm -rf -- "$SETUP_STAGING"
+    fi
+    if [[ "${OLD_RUNTIME_BACKED_UP:-0}" -eq 1 ]] &&
+        is_safe_setup_path "$WARI_PROJECT_ROOT" "$RUNTIME_BACKUP" '.wari-backup'; then
+        mv -- "$RUNTIME_BACKUP" "$WARI_PROJECT_ROOT/.wari" 2>/dev/null || true
+    fi
+    if [[ "${SETUP_LOCK_OWNED:-0}" -eq 1 &&
+        "$SETUP_LOCK" == "$WARI_PROJECT_ROOT/.wari-setup.lock" ]]; then
+        rm -rf -- "$SETUP_LOCK"
+    fi
+    exit "$status"
+}
+
+confirm_setup() {
+    local answer
+
+    if ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
+        die 'setup requires confirmation; pass --yes for automation'
+        return 2
+    fi
+    printf 'Install or replace this project local Wari runtime? [y/N]: ' >&4
+    IFS= read -r answer <&3 || return 2
+    case "$answer" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+setup_main() (
+    local assume_yes=0
+    local argument
+
+    for argument in "$@"; do
+        case "$argument" in
+            --yes) assume_yes=1 ;;
+            --help|-h)
+                printf '%s\n' 'Usage: ./wari setup [--yes]'
+                return 0
+                ;;
+            *) die "unknown setup option: $argument"; return 2 ;;
+        esac
+    done
+
+    WARI_PROJECT_ROOT="${WARI_PROJECT_ROOT:-$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)}"
+    WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+    parse_lock "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    detect_current_platform || return 1
+    if [[ "$PLATFORM_OS" == 'linux' && "$LOCK_LINUX_BUILD" == 'gnu' ]] &&
+        ! has_glibc; then
+        die 'GNU Wari runtime requires glibc; use a lock generated for the static build'
+        return 1
+    fi
+    LOCK_SHA256="$(lock_digest "$WARI_PROJECT_ROOT/wari.lock")" || return 1
+
+    if [[ -e "$WARI_RUNTIME_DIR" || -L "$WARI_RUNTIME_DIR" ]]; then
+        if validate_runtime "$WARI_PROJECT_ROOT" >/dev/null 2>&1; then
+            printf 'Wari runtime is already ready.\n'
+            return 0
+        fi
+        if ! is_recognized_runtime "$WARI_RUNTIME_DIR"; then
+            die '.wari/ exists but is not recognized as a Wari runtime'
+            return 1
+        fi
+    fi
+
+    if [[ "$assume_yes" -ne 1 ]]; then
+        if confirm_setup; then
+            :
+        else
+            confirm_status=$?
+            if [[ "$confirm_status" -eq 1 ]]; then
+                printf 'Wari setup cancelled.\n'
+                return 0
+            fi
+            return 1
+        fi
+    fi
+
+    SETUP_LOCK="$WARI_PROJECT_ROOT/.wari-setup.lock"
+    SETUP_LOCK_OWNED=0
+    SETUP_STAGING=''
+    RUNTIME_BACKUP=''
+    OLD_RUNTIME_BACKED_UP=0
+    NEW_RUNTIME_PUBLISHED=0
+    trap cleanup_setup EXIT
+    trap '' INT TERM HUP
+    if ! mkdir -- "$SETUP_LOCK" 2>/dev/null; then
+        die 'another Wari setup is already running'
+        return 1
+    fi
+    SETUP_LOCK_OWNED=1
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    printf '%s\n' "$$" >"$SETUP_LOCK/pid" || return 1
+    SETUP_STAGING="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-install.XXXXXX")" || return $?
+
+    install_locked_frankenphp "$SETUP_STAGING" || return 1
+    install_locked_composer "$SETUP_STAGING" || return 1
+    generate_wrappers "$SETUP_STAGING" || return 1
+    detect_installed_versions "$SETUP_STAGING" || return 1
+    write_manifest "$SETUP_STAGING" || return 1
+    run_staged_smoke_checks "$SETUP_STAGING" || return 1
+
+    if [[ -d "$WARI_RUNTIME_DIR" ]]; then
+        RUNTIME_BACKUP="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-backup.XXXXXX")"
+        rmdir -- "$RUNTIME_BACKUP"
+        mv -- "$WARI_RUNTIME_DIR" "$RUNTIME_BACKUP" || return 1
+        OLD_RUNTIME_BACKED_UP=1
+    fi
+    mv -- "$SETUP_STAGING" "$WARI_RUNTIME_DIR" || return 1
+    SETUP_STAGING=''
+    NEW_RUNTIME_PUBLISHED=1
+    validate_runtime "$WARI_PROJECT_ROOT" || return 1
+
+    if [[ "$OLD_RUNTIME_BACKED_UP" -eq 1 ]]; then
+        rm -rf -- "$RUNTIME_BACKUP"
+        OLD_RUNTIME_BACKED_UP=0
+    fi
+    rm -rf -- "$SETUP_LOCK"
+    SETUP_LOCK_OWNED=0
+    NEW_RUNTIME_PUBLISHED=0
+    trap - EXIT INT TERM HUP
+    printf 'Wari runtime is ready.\n'
+)
+
+read_wari_release_asset() {
+    local json_file="$1"
+    local asset_name="$2"
+    local record
+    local digest
+    local url
+
+    record="$(awk -v target="$asset_name" '
+        function string_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        /^[[:space:]]*"name":[[:space:]]*"/ {
+            value = string_value($0)
+            if (value == target) { matches++; active = 1 } else { active = 0 }
+            next
+        }
+        active && /^[[:space:]]*"digest":[[:space:]]*"/ {
+            digest = string_value($0); next
+        }
+        active && /^[[:space:]]*"browser_download_url":[[:space:]]*"/ {
+            url = string_value($0); active = 0
+        }
+        END {
+            if (matches != 1 || digest == "" || url == "") exit 2
+            printf "%s\t%s\n", digest, url
+        }
+    ' "$json_file")" || return 1
+    IFS=$'\t' read -r digest url <<<"$record"
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    printf '%s\t%s\n' "${digest#sha256:}" "$url"
+}
+
+parse_wari_release() {
+    local json_file="$1"
+    local header
+    local wari_record
+    local lock_record
+
+    header="$(awk '
+        function string_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        function scalar_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*/, "", value)
+            sub(/[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        /^[[:space:]]*"tag_name":/ { tags++; tag = string_value($0) }
+        /^[[:space:]]*"draft":/ { drafts++; draft = scalar_value($0) }
+        /^[[:space:]]*"prerelease":/ { pres++; pre = scalar_value($0) }
+        END {
+            if (tags != 1 || drafts != 1 || pres != 1) exit 2
+            printf "%s\t%s\t%s\n", tag, draft, pre
+        }
+    ' "$json_file")" || { die 'invalid Wari release metadata'; return 1; }
+    IFS=$'\t' read -r WARI_RELEASE_TAG release_draft release_prerelease <<<"$header"
+    [[ "$WARI_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
+        "$release_draft" == 'false' && "$release_prerelease" == 'false' ]] || {
+        die 'Wari release must be a stable semantic version'
+        return 1
+    }
+
+    wari_record="$(read_wari_release_asset "$json_file" wari)" || return 1
+    lock_record="$(read_wari_release_asset "$json_file" wari.lock)" || return 1
+    IFS=$'\t' read -r WARI_ASSET_SHA256 WARI_ASSET_URL <<<"$wari_record"
+    IFS=$'\t' read -r WARI_LOCK_ASSET_SHA256 WARI_LOCK_ASSET_URL <<<"$lock_record"
+    [[ "$WARI_ASSET_URL" == \
+        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari" &&
+        "$WARI_LOCK_ASSET_URL" == \
+        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari.lock" ]] || {
+        die 'Wari release asset URL is not official'
+        return 1
+    }
+}
+
+
+fetch_wari_update() {
+    local staging="$1"
+    local release_json="$staging/wari-release.json"
+
+    download_file \
+        'https://api.github.com/repos/wednesdaymoonlab/wari/releases/latest' \
+        "$release_json" || return 1
+    parse_wari_release "$release_json" || return 1
+    download_file "$WARI_ASSET_URL" "$staging/wari" 'Wari launcher' || return 1
+    verify_checksum sha256 "$WARI_ASSET_SHA256" "$staging/wari" || return 1
+    download_file "$WARI_LOCK_ASSET_URL" "$staging/wari.lock" 'Wari lock' || return 1
+    verify_checksum sha256 "$WARI_LOCK_ASSET_SHA256" "$staging/wari.lock" || return 1
+    rm -f -- "$release_json"
+    chmod 755 "$staging/wari"
+}
+
+validate_launcher_pair() {
+    local launcher="$1"
+    local lock="$2"
+    local actual_sha
+    local reported_version
+
+    parse_lock "$lock" || return 1
+    actual_sha="$(calculate_checksum sha256 "$launcher")" || return 1
+    [[ "$actual_sha" == "$LOCK_WARI_SHA256" ]] || {
+        die 'tracked Wari launcher has local modifications or does not match wari.lock'
+        return 1
+    }
+    reported_version="$(bash "$launcher" --version-value)" || return 1
+    [[ "$reported_version" == "$LOCK_WARI_VERSION" ]] || {
+        die 'Wari launcher version does not match wari.lock'
+        return 1
+    }
+}
+
+update_main() (
+    local assume_yes=0
+    local current_version
+    local candidate_version
+    local staging
+    local launcher_published=0
+    local lock_published=0
+
+    case "${1-}" in
+        --yes) assume_yes=1; shift ;;
+        --help|-h)
+            printf '%s\n' 'Usage: ./wari update [--yes]'
+            return 0
+            ;;
+    esac
+    [[ "$#" -eq 0 ]] || { die "unknown update option: $1"; return 2; }
+
+    WARI_PROJECT_ROOT="${WARI_PROJECT_ROOT:-$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)}"
+    WARI_LAUNCHER="${WARI_LAUNCHER:-$WARI_PROJECT_ROOT/wari}"
+    validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    current_version="$LOCK_WARI_VERSION"
+
+    staging="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-update.XXXXXX")"
+    cleanup_update() {
+        local status=$?
+        if [[ "$lock_published" -eq 1 && -f "$staging/wari.lock.old" ]]; then
+            cp "$staging/wari.lock.old" "$WARI_PROJECT_ROOT/wari.lock" || true
+        fi
+        if [[ "$launcher_published" -eq 1 && -f "$staging/wari.old" ]]; then
+            cp "$staging/wari.old" "$WARI_LAUNCHER" || true
+            chmod 755 "$WARI_LAUNCHER" || true
+        fi
+        case "$staging" in
+            "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
+        esac
+        exit "$status"
+    }
+    trap cleanup_update EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+
+    fetch_wari_update "$staging" || return 1
+    validate_launcher_pair "$staging/wari" "$staging/wari.lock" || return 1
+    candidate_version="$LOCK_WARI_VERSION"
+    printf 'Wari update: %s -> %s\n' "$current_version" "$candidate_version"
+
+    if [[ "$assume_yes" -ne 1 ]]; then
+        if confirm_setup; then
+            :
+        else
+            confirm_status=$?
+            if [[ "$confirm_status" -eq 1 ]]; then
+                printf 'Wari update cancelled.\n'
+                return 0
+            fi
+            return 1
+        fi
+    fi
+
+    cp "$WARI_LAUNCHER" "$staging/wari.old"
+    cp "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock.old"
+    mv -- "$staging/wari" "$WARI_LAUNCHER" || return 1
+    chmod 755 "$WARI_LAUNCHER"
+    launcher_published=1
+    mv -- "$staging/wari.lock" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    lock_published=1
+    validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+
+    rm -rf -- "$staging"
+    launcher_published=0
+    lock_published=0
+    trap - EXIT INT TERM HUP
+    printf '%s\n' '' 'Review the tracked changes, then run:' '  ./wari setup'
+)
+
+generate_wrappers() {
+    local wari_dir="$1"
+
+    if [[ ! -d "$wari_dir/runtime" ]]; then
+        die "runtime directory is missing: $wari_dir/runtime"
+        return 1
+    fi
+
+    cat >"$wari_dir/runtime/php-proxy.php" <<'WARI_PHP_PROXY'
+<?php
+
+declare(strict_types=1);
+
+$mode = $argv[1] ?? '';
+$arguments = array_slice($argv, 2);
+
+switch ($mode) {
+    case 'version':
+        printf("PHP %s (cli)\n", PHP_VERSION);
+        break;
+
+    case 'eval':
+        if ($arguments === []) {
+            fwrite(STDERR, "Error: -r requires PHP code.\n");
+            exit(2);
+        }
+        $code = array_shift($arguments);
+        $argv = array_merge(['Standard input code'], $arguments);
+        $argc = count($argv);
+        $_SERVER['argv'] = $argv;
+        $_SERVER['argc'] = $argc;
+        eval($code);
+        break;
+
+    case 'modules':
+        $modules = get_loaded_extensions(false);
+        sort($modules, SORT_STRING | SORT_FLAG_CASE);
+        $zendModules = get_loaded_extensions(true);
+        sort($zendModules, SORT_STRING | SORT_FLAG_CASE);
+        echo "[PHP Modules]\n", implode("\n", $modules), "\n\n[Zend Modules]\n";
+        if ($zendModules !== []) {
+            echo implode("\n", $zendModules), "\n";
+        }
+        break;
+
+    case 'info':
+        phpinfo(INFO_ALL);
+        break;
+
+    default:
+        fwrite(STDERR, "Error: unsupported Wari PHP helper mode.\n");
+        exit(2);
+}
+WARI_PHP_PROXY
+
+    cat >"$wari_dir/php" <<'WARI_PHP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+export PHP_BINARY="$WARI_DIR/php"
+case "$PATH" in
+    "$WARI_DIR"|"$WARI_DIR":*) ;;
+    *) export PATH="$WARI_DIR:$PATH" ;;
+esac
+
+arguments=("$@")
+filtered_arguments=()
+index=0
+while ((index < ${#arguments[@]})); do
+    argument="${arguments[$index]}"
+    case "$argument" in
+        -d)
+            if ((index + 1 >= ${#arguments[@]})); then
+                printf 'Error: -d requires a setting; FrankenPHP php-cli cannot apply -d options.\n' >&2
+                exit 2
+            fi
+            setting="${arguments[$((index + 1))]}"
+            if [[ "${WARI_COMPOSER_CONTEXT:-0}" != 1 ]]; then
+                printf 'Wari warning: ignored unsupported PHP option: -d %s\n' "$setting" >&2
+            fi
+            index=$((index + 2))
+            ;;
+        -d*)
+            setting="${argument#-d}"
+            if [[ "${WARI_COMPOSER_CONTEXT:-0}" != 1 ]]; then
+                printf 'Wari warning: ignored unsupported PHP option: -d%s\n' "$setting" >&2
+            fi
+            index=$((index + 1))
+            ;;
+        *)
+            filtered_arguments+=("$argument")
+            index=$((index + 1))
+            ;;
+    esac
+done
+
+case "${filtered_arguments[0]-}" in
+    -S)
+        if ((${#filtered_arguments[@]} < 2)) || [[ -z "${filtered_arguments[1]}" ]]; then
+            printf 'Error: -S requires a listen address.\n' >&2
+            exit 2
+        fi
+
+        listen_address="${filtered_arguments[1]}"
+        document_root="$PWD"
+        server_index=2
+
+        if [[ "${filtered_arguments[$server_index]-}" == -t ]]; then
+            if ((server_index + 1 >= ${#filtered_arguments[@]})); then
+                printf 'Error: -t requires a document root.\n' >&2
+                exit 2
+            fi
+
+            document_root_argument="${filtered_arguments[$((server_index + 1))]}"
+            if [[ ! -d "$document_root_argument" ]]; then
+                printf 'Error: PHP server document root does not exist: %s\n' "$document_root_argument" >&2
+                exit 2
+            fi
+
+            document_root="$(CDPATH= cd -- "$document_root_argument" && pwd -P)"
+            server_index=$((server_index + 2))
+        fi
+
+        if ((${#filtered_arguments[@]} - server_index > 1)); then
+            printf 'Error: PHP server accepts at most one router script.\n' >&2
+            exit 2
+        fi
+
+        if [[ -z "${HOME:-}" ]]; then
+            if [[ -z "${XDG_CONFIG_HOME:-}" ]]; then
+                XDG_CONFIG_HOME="$WARI_DIR/runtime/xdg/config"
+                export XDG_CONFIG_HOME
+                mkdir -p -- "$XDG_CONFIG_HOME"
+            fi
+            if [[ -z "${XDG_DATA_HOME:-}" ]]; then
+                XDG_DATA_HOME="$WARI_DIR/runtime/xdg/data"
+                export XDG_DATA_HOME
+                mkdir -p -- "$XDG_DATA_HOME"
+            fi
+        fi
+
+        exec "$WARI_DIR/runtime/frankenphp" php-server \
+            --listen "$listen_address" \
+            --root "$document_root"
+        ;;
+    --version|-v)
+        exec "$WARI_DIR/runtime/frankenphp" php-cli \
+            "$WARI_DIR/runtime/php-proxy.php" version
+        ;;
+    -r)
+        if ((${#filtered_arguments[@]} < 2)); then
+            printf 'Error: -r requires PHP code.\n' >&2
+            exit 2
+        fi
+        exec "$WARI_DIR/runtime/frankenphp" php-cli \
+            "$WARI_DIR/runtime/php-proxy.php" eval \
+            "${filtered_arguments[@]:1}"
+        ;;
+    -m)
+        exec "$WARI_DIR/runtime/frankenphp" php-cli \
+            "$WARI_DIR/runtime/php-proxy.php" modules
+        ;;
+    -i)
+        exec "$WARI_DIR/runtime/frankenphp" php-cli \
+            "$WARI_DIR/runtime/php-proxy.php" info
+        ;;
+esac
+
+exec "$WARI_DIR/runtime/frankenphp" php-cli "${filtered_arguments[@]}"
+WARI_PHP
+
+    cat >"$wari_dir/composer" <<'WARI_COMPOSER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
+cd -- "$PROJECT_ROOT"
+
+export PHP_BINARY="$WARI_DIR/php"
+export PATH="$WARI_DIR:$PATH"
+export WARI_COMPOSER_CONTEXT=1
+exec "$WARI_DIR/php" "$WARI_DIR/runtime/composer.phar" "$@"
+WARI_COMPOSER
+
+    cat >"$wari_dir/create-project" <<'WARI_CREATE_PROJECT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+create_project_usage() {
+    printf '%s\n' \
+        'Usage: ./wari create-project [--yes] <package> [version] [composer-options]' \
+        '' \
+        'Create a Composer project in the current Wari project directory.' \
+        'Use --yes to accept Wari confirmation in automation.'
+}
+
+create_project_error() {
+    printf 'Error: %s\n' "$1" >&2
+}
+
+STAGING_DIR=''
+STAGING_PREFIX=''
+CURRENT_SOURCE=''
+CURRENT_DESTINATION=''
+CREATE_PROJECT_COMPLETE=0
+IGNORE_BACKED_UP=0
+IGNORE_REPLACED=0
+IGNORE_BACKUP=''
+PUBLISHED_ENTRIES=()
+
+write_wari_ignore_block() {
+    printf '%s\n' \
+        '# Wari local runtime' \
+        '/.wari/' \
+        '/.wari-install.*' \
+        '/.wari-backup.*' \
+        '/.wari-update.*' \
+        '/.wari-setup.lock'
+}
+
+has_wari_ignore_block() {
+    local path="$1"
+    awk '
+        NR == 1 && $0 != "# Wari local runtime" { exit 1 }
+        NR == 2 && $0 != "/.wari/" { exit 1 }
+        NR == 3 && $0 != "/.wari-install.*" { exit 1 }
+        NR == 4 && $0 != "/.wari-backup.*" { exit 1 }
+        NR == 5 && $0 != "/.wari-update.*" { exit 1 }
+        NR == 6 && $0 != "/.wari-setup.lock" { exit 1 }
+        NR > 6 { exit 1 }
+        END { exit !(NR == 6) }
+    ' "$path"
+}
+
+is_safe_create_staging() {
+    local path="$1"
+    local base
+
+    [[ -n "$STAGING_DIR" && "$path" == "$STAGING_DIR" ]] || return 1
+    [[ "$path" != "$PROJECT_ROOT" ]] || return 1
+    [[ "$(dirname -- "$path")" == "$PROJECT_PARENT" ]] || return 1
+    base="${path##*/}"
+    [[ "$base" == "$STAGING_PREFIX"?* && "$base" != "$STAGING_PREFIX" ]] ||
+        return 1
+    [[ -d "$path" && ! -L "$path" ]]
+}
+
+is_safe_published_entry() {
+    local path="$1"
+    local base
+
+    [[ "$(dirname -- "$path")" == "$PROJECT_ROOT" ]] || return 1
+    base="${path##*/}"
+    [[ -n "$base" && "$base" != wari && "$base" != wari.lock &&
+        "$base" != .wari && "$base" != .gitignore ]]
+}
+
+cleanup_create_project() {
+    local status=$?
+    local index path
+
+    trap - EXIT INT TERM
+
+    if [[ "$CREATE_PROJECT_COMPLETE" -ne 1 ]]; then
+        if [[ "$IGNORE_BACKED_UP" -eq 1 && -f "$IGNORE_BACKUP" ]]; then
+            if [[ "$IGNORE_REPLACED" -eq 1 &&
+                -f "$PROJECT_ROOT/.gitignore" && ! -L "$PROJECT_ROOT/.gitignore" ]]; then
+                rm -f -- "$PROJECT_ROOT/.gitignore" || status=1
+            fi
+            if [[ ! -e "$PROJECT_ROOT/.gitignore" ]]; then
+                mv -- "$IGNORE_BACKUP" "$PROJECT_ROOT/.gitignore" || status=1
+                IGNORE_BACKED_UP=0
+            fi
+        fi
+        if [[ -n "$CURRENT_DESTINATION" &&
+            ! -e "$CURRENT_SOURCE" && ! -L "$CURRENT_SOURCE" &&
+            ( -e "$CURRENT_DESTINATION" || -L "$CURRENT_DESTINATION" ) ]]; then
+            if is_safe_published_entry "$CURRENT_DESTINATION"; then
+                rm -rf -- "$CURRENT_DESTINATION" || status=1
+            else
+                create_project_error \
+                    "refusing to remove unsafe published path: $CURRENT_DESTINATION"
+                status=1
+            fi
+        fi
+
+        index=$((${#PUBLISHED_ENTRIES[@]} - 1))
+        while ((index >= 0)); do
+            path="${PUBLISHED_ENTRIES[$index]}"
+            if is_safe_published_entry "$path"; then
+                rm -rf -- "$path" || status=1
+            else
+                create_project_error "refusing to remove unsafe published path: $path"
+                status=1
+            fi
+            index=$((index - 1))
+        done
+    fi
+
+    if [[ -n "$STAGING_DIR" && ( -e "$STAGING_DIR" || -L "$STAGING_DIR" ) ]]; then
+        if is_safe_create_staging "$STAGING_DIR"; then
+            rm -rf -- "$STAGING_DIR" || status=1
+        else
+            create_project_error "refusing to remove unsafe staging path: $STAGING_DIR"
+            status=1
+        fi
+    fi
+
+    exit "$status"
+}
+
+validate_project_root() {
+    local candidate name count=0
+
+    if [[ ! -d "$WARI_DIR" || -L "$WARI_DIR" ]]; then
+        create_project_error "Wari runtime directory is invalid: $WARI_DIR"
+        return 1
+    fi
+    if [[ ! -f "$PROJECT_ROOT/wari" || ! -x "$PROJECT_ROOT/wari" ||
+        -L "$PROJECT_ROOT/wari" ]]; then
+        create_project_error "Wari dispatcher is invalid: $PROJECT_ROOT/wari"
+        return 1
+    fi
+    if [[ ! -f "$PROJECT_ROOT/wari.lock" || -L "$PROJECT_ROOT/wari.lock" ]]; then
+        create_project_error "Wari lock is invalid: $PROJECT_ROOT/wari.lock"
+        return 1
+    fi
+    if [[ ! -f "$PROJECT_ROOT/.gitignore" || -L "$PROJECT_ROOT/.gitignore" ]] ||
+        ! has_wari_ignore_block "$PROJECT_ROOT/.gitignore"; then
+        create_project_error 'Wari bootstrap .gitignore is invalid'
+        return 1
+    fi
+    if [[ ! -x "$WARI_DIR/php" || ! -x "$WARI_DIR/composer" ||
+        ! -x "$WARI_DIR/create-project" ||
+        ! -f "$WARI_DIR/runtime/composer.phar" ]]; then
+        create_project_error 'Wari runtime is incomplete'
+        return 1
+    fi
+
+    while IFS= read -r -d '' candidate; do
+        name="${candidate##*/}"
+        case "$name" in
+            wari|wari.lock|.wari|.gitignore) ;;
+            *)
+                create_project_error \
+                    "project directory contains an unsupported entry: $name"
+                return 1
+                ;;
+        esac
+        count=$((count + 1))
+    done < <(find "$PROJECT_ROOT" -mindepth 1 -maxdepth 1 -print0)
+
+    if [[ "$count" -ne 4 ]]; then
+        create_project_error \
+            'project directory must contain only wari, wari.lock, .wari/, and .gitignore'
+        return 1
+    fi
+}
+
+confirm_create_project() {
+    local answer
+
+    printf '%s\n\n  %s\n\n%s\n' \
+        'Wari will create a Composer project in:' \
+        "$PROJECT_ROOT" \
+        'Only ./wari, ./wari.lock, ./.wari/, and Wari ignore rules will be preserved.' >&4
+    printf 'Continue? [y/N]: ' >&4
+    if ! IFS= read -r answer <&3; then
+        create_project_error 'interactive input ended unexpectedly'
+        return 1
+    fi
+    case "$answer" in
+        y|Y) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
+create_project_main() {
+    local argument package='' confirmation_status composer_status
+    local source name destination
+    local assume_yes=0
+    local -a filtered_arguments=()
+    local -a composer_arguments=()
+
+    if [[ "$#" -eq 1 ]]; then
+        case "$1" in
+            -h|--help)
+                create_project_usage
+                return 0
+                ;;
+        esac
+    fi
+
+    for argument in "$@"; do
+        case "$argument" in
+            --yes) assume_yes=1 ;;
+            *) filtered_arguments+=("$argument") ;;
+        esac
+    done
+
+    package="${filtered_arguments[0]-}"
+    if [[ -z "$package" || "$package" == -* ]]; then
+        create_project_usage >&2
+        return 2
+    fi
+    composer_arguments=("${filtered_arguments[@]:1}")
+
+    validate_project_root || return 1
+
+    if [[ "$assume_yes" -ne 1 ]]; then
+        if ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
+            create_project_error \
+                'interactive confirmation is unavailable; pass --yes for automation'
+            return 1
+        fi
+        if confirm_create_project; then
+            :
+        else
+            confirmation_status=$?
+            if [[ "$confirmation_status" -eq 2 ]]; then
+                printf 'Project creation cancelled.\n'
+                return 0
+            fi
+            return "$confirmation_status"
+        fi
+    fi
+
+    STAGING_PREFIX=".$PROJECT_NAME.wari-create."
+    STAGING_DIR="$(mktemp -d "${PROJECT_PARENT}/${STAGING_PREFIX}XXXXXX")" || {
+        create_project_error 'could not create the project staging directory'
+        return 1
+    }
+    trap cleanup_create_project EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    if ((${#composer_arguments[@]} > 0)); then
+        if "$WARI_DIR/composer" create-project "$package" "$STAGING_DIR" \
+            "${composer_arguments[@]}"; then
+            :
+        else
+            composer_status=$?
+            exit "$composer_status"
+        fi
+    else
+        if "$WARI_DIR/composer" create-project "$package" "$STAGING_DIR"; then
+            :
+        else
+            composer_status=$?
+            exit "$composer_status"
+        fi
+    fi
+
+    if [[ ! -f "$STAGING_DIR/composer.json" ]]; then
+        create_project_error 'Composer project did not create composer.json'
+        return 1
+    fi
+    if [[ -e "$STAGING_DIR/wari" || -L "$STAGING_DIR/wari" ||
+        -e "$STAGING_DIR/wari.lock" || -L "$STAGING_DIR/wari.lock" ||
+        -e "$STAGING_DIR/.wari" || -L "$STAGING_DIR/.wari" ]]; then
+        create_project_error 'Composer project conflicts with reserved Wari paths'
+        return 1
+    fi
+    validate_project_root || return 1
+
+    if [[ -e "$STAGING_DIR/.gitignore" || -L "$STAGING_DIR/.gitignore" ]]; then
+        if [[ ! -f "$STAGING_DIR/.gitignore" || -L "$STAGING_DIR/.gitignore" ]]; then
+            create_project_error 'Composer project created an invalid .gitignore'
+            return 1
+        fi
+        if ! has_wari_ignore_block "$STAGING_DIR/.gitignore"; then
+            if [[ -s "$STAGING_DIR/.gitignore" &&
+                "$(tail -c 1 "$STAGING_DIR/.gitignore" 2>/dev/null || true)" != '' ]]; then
+                printf '\n' >>"$STAGING_DIR/.gitignore"
+            fi
+            if [[ -s "$STAGING_DIR/.gitignore" ]]; then
+                printf '\n' >>"$STAGING_DIR/.gitignore"
+            fi
+            write_wari_ignore_block >>"$STAGING_DIR/.gitignore"
+        fi
+        IGNORE_BACKUP="$STAGING_DIR/.wari-bootstrap-gitignore"
+        mv -- "$PROJECT_ROOT/.gitignore" "$IGNORE_BACKUP" || return 1
+        IGNORE_BACKED_UP=1
+    fi
+
+    while IFS= read -r -d '' source; do
+        name="${source##*/}"
+        if [[ "$name" == '.wari-bootstrap-gitignore' ]]; then
+            continue
+        fi
+        destination="$PROJECT_ROOT/$name"
+        if [[ -e "$destination" || -L "$destination" ]]; then
+            create_project_error \
+                "destination entry appeared during publication: $name"
+            return 1
+        fi
+        CURRENT_SOURCE="$source"
+        CURRENT_DESTINATION="$destination"
+        mv -- "$source" "$destination"
+        if [[ "$name" == '.gitignore' ]]; then
+            IGNORE_REPLACED=1
+        else
+            PUBLISHED_ENTRIES+=("$destination")
+        fi
+        CURRENT_SOURCE=''
+        CURRENT_DESTINATION=''
+    done < <(find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -print0)
+
+    if [[ "$IGNORE_BACKED_UP" -eq 1 ]]; then
+        rm -f -- "$IGNORE_BACKUP"
+        IGNORE_BACKED_UP=0
+        IGNORE_REPLACED=0
+    fi
+
+    rmdir -- "$STAGING_DIR"
+    STAGING_DIR=''
+    PUBLISHED_ENTRIES=()
+    CREATE_PROJECT_COMPLETE=1
+    trap - EXIT INT TERM
+
+    printf '%s\n\n  %s\n\n%s\n%s\n%s\n' \
+        'Composer project created successfully in:' \
+        "$PROJECT_ROOT" \
+        'Wari is ready:' \
+        '  ./wari php --version' \
+        '  ./wari composer --version'
+}
+
+if [[ -n "${WARI_PROJECT_ROOT:-}" ]]; then
+    PROJECT_ROOT="$(CDPATH= cd -- "$WARI_PROJECT_ROOT" && pwd -P)"
+    WARI_DIR="$PROJECT_ROOT/.wari"
+else
+    WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$WARI_DIR")" && pwd -P)"
+fi
+PROJECT_PARENT="$(CDPATH= cd -- "$(dirname -- "$PROJECT_ROOT")" && pwd -P)"
+PROJECT_NAME="${PROJECT_ROOT##*/}"
+
+create_project_main "$@"
+WARI_CREATE_PROJECT
+
+    cat >"$wari_dir/serve" <<'WARI_SERVE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
+cd -- "$PROJECT_ROOT"
+
+if [[ ! -d "$PROJECT_ROOT/public" ]]; then
+    printf 'Error: public directory does not exist: %s/public\n' "$PROJECT_ROOT" >&2
+    exit 1
+fi
+
+exec "$WARI_DIR/runtime/frankenphp" php-server \
+    --listen 127.0.0.1:8000 \
+    --root "$PROJECT_ROOT/public"
+WARI_SERVE
+
+    cat >"$wari_dir/frankenphp" <<'WARI_FRANKENPHP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
+cd -- "$PROJECT_ROOT"
+
+exec "$WARI_DIR/runtime/frankenphp" "$@"
+WARI_FRANKENPHP
+
+    chmod 755 \
+        "$wari_dir/php" \
+        "$wari_dir/composer" \
+        "$wari_dir/create-project" \
+        "$wari_dir/serve" \
+        "$wari_dir/frankenphp"
+}
+
+launcher_usage() {
+    printf '%s\n' \
+        'Usage: ./wari <command> [arguments]' \
+        '' \
+        'Commands:' \
+        '  setup           Install or refresh the local runtime' \
+        '  update          Update the tracked launcher and lock' \
+        '  php              Run project-local PHP' \
+        '  composer         Run project-local Composer' \
+        '  create-project   Create a Composer project in this directory' \
+        '  serve            Serve ./public at http://127.0.0.1:8000' \
+        '  frankenphp       Run the bundled FrankenPHP binary' \
+        '  help             Show this help'
+}
+
+runtime_not_ready() {
+    printf '%s\n' \
+        'Error: Wari runtime is not ready for this project.' \
+        '' \
+        'Run:' \
+        '  ./wari setup' >&2
+    return 1
+}
+
+calculate_checksum() {
+    local algorithm="$1"
+    local file="$2"
+    local output
+
+    case "$algorithm" in
+        sha256)
+            if command -v sha256sum >/dev/null 2>&1; then
+                output="$(sha256sum "$file")"
+            elif command -v shasum >/dev/null 2>&1; then
+                output="$(shasum -a 256 "$file")"
+            else
+                die 'no SHA-256 checksum utility found'
+                return 1
+            fi
+            ;;
+        sha384)
+            if command -v sha384sum >/dev/null 2>&1; then
+                output="$(sha384sum "$file")"
+            elif command -v shasum >/dev/null 2>&1; then
+                output="$(shasum -a 384 "$file")"
+            else
+                die 'no SHA-384 checksum utility found'
+                return 1
+            fi
+            ;;
+        *) die "unsupported checksum algorithm: $algorithm"; return 1 ;;
+    esac
+    output="${output%%[[:space:]]*}"
+    printf '%s\n' "$output" | tr 'A-F' 'a-f'
+}
+
+lock_digest() {
+    calculate_checksum sha256 "$1"
+}
+
+manifest_string() {
+    local manifest="$1"
+    local key="$2"
+    local value
+
+    value="$(sed -n 's/^[[:space:]]*"'"$key"'": "\([^"[:cntrl:]]*\)",\{0,1\}[[:space:]]*$/\1/p' "$manifest")"
+    [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+    printf '%s\n' "$value"
+}
+
+manifest_integer() {
+    local manifest="$1"
+    local key="$2"
+    local value
+
+    value="$(sed -n 's/^[[:space:]]*"'"$key"'": \([0-9][0-9]*\),\{0,1\}[[:space:]]*$/\1/p' "$manifest")"
+    [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+    printf '%s\n' "$value"
+}
+
+detect_current_platform() {
+    case "$(uname -s)" in
+        Linux) PLATFORM_OS='linux' ;;
+        Darwin) PLATFORM_OS='darwin' ;;
+        *) die "unsupported operating system: $(uname -s)"; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64) PLATFORM_ARCH='x86_64' ;;
+        arm64|aarch64) PLATFORM_ARCH='arm64' ;;
+        *) die "unsupported architecture: $(uname -m)"; return 1 ;;
+    esac
+}
+
+validate_runtime() {
+    local project_root="$1"
+    local runtime_dir="$project_root/.wari"
+    local manifest="$runtime_dir/manifest.json"
+    local actual_lock_sha
+    local manifest_lock_sha
+    local manifest_os
+    local manifest_arch
+    local manifest_wari
+    local manifest_frankenphp
+    local manifest_composer
+    local output
+    local command_name
+
+    if [[ ! -e "$runtime_dir" && ! -L "$runtime_dir" ]]; then
+        die 'Wari runtime is not installed for this project'
+        return 1
+    fi
+    if ! is_recognized_runtime "$runtime_dir"; then
+        die '.wari/ exists but is not recognized as a Wari runtime'
+        return 1
+    fi
+    if [[ "$(manifest_integer "$manifest" layout_version)" != '2' ]]; then
+        die 'Wari runtime layout is incomplete or unsupported'
+        return 1
+    fi
+
+    parse_lock "$project_root/wari.lock" || return 1
+    actual_lock_sha="$(lock_digest "$project_root/wari.lock")" || return 1
+    manifest_lock_sha="$(manifest_string "$manifest" lock_sha256)" || return 1
+    if [[ "$manifest_lock_sha" != "$actual_lock_sha" ]]; then
+        die 'installed Wari runtime does not match wari.lock'
+        return 1
+    fi
+
+    detect_current_platform || return 1
+    manifest_os="$(manifest_string "$manifest" os)" || return 1
+    manifest_arch="$(manifest_string "$manifest" architecture)" || return 1
+    if [[ "$manifest_os" != "$PLATFORM_OS" || "$manifest_arch" != "$PLATFORM_ARCH" ]]; then
+        die 'installed Wari runtime does not match this machine'
+        return 1
+    fi
+
+    manifest_wari="$(manifest_string "$manifest" wari_version)" || return 1
+    manifest_frankenphp="$(manifest_string "$manifest" frankenphp_version)" || return 1
+    manifest_composer="$(manifest_string "$manifest" composer_version)" || return 1
+    if [[ "$manifest_wari" != "$LOCK_WARI_VERSION" ||
+        "$manifest_frankenphp" != "$LOCK_FRANKENPHP_VERSION" ||
+        "$manifest_composer" != "$LOCK_COMPOSER_VERSION" ]]; then
+        die 'installed Wari runtime versions do not match wari.lock'
+        return 1
+    fi
+
+    for command_name in php composer create-project serve frankenphp; do
+        [[ -f "$runtime_dir/$command_name" && -x "$runtime_dir/$command_name" &&
+            ! -L "$runtime_dir/$command_name" ]] || {
+            die "Wari runtime is incomplete: $command_name"
+            return 1
+        }
+    done
+    [[ -f "$runtime_dir/runtime/frankenphp" &&
+        -x "$runtime_dir/runtime/frankenphp" &&
+        ! -L "$runtime_dir/runtime/frankenphp" ]] || {
+        die 'Wari runtime is incomplete: FrankenPHP binary'
+        return 1
+    }
+    [[ -f "$runtime_dir/runtime/composer.phar" &&
+        ! -L "$runtime_dir/runtime/composer.phar" ]] || {
+        die 'Wari runtime is incomplete: Composer PHAR'
+        return 1
+    }
+
+    output="$("$runtime_dir/php" --version)" || return 1
+    [[ "$output" == "PHP $(manifest_string "$manifest" php_version)"* ]] || return 1
+    output="$("$runtime_dir/composer" --version)" || return 1
+    [[ "$output" == "Composer version $LOCK_COMPOSER_VERSION"* ]] || return 1
+    output="$("$runtime_dir/frankenphp" version)" || return 1
+    [[ "$output" == *"FrankenPHP v$LOCK_FRANKENPHP_VERSION"* ]] || return 1
+}
+
+dispatch_runtime() {
+    local command_name="$1"
+    shift
+
+    validate_runtime "$WARI_PROJECT_ROOT" || {
+        runtime_not_ready
+        return 1
+    }
+    if [[ ! -x "$WARI_RUNTIME_DIR/$command_name" ]]; then
+        runtime_not_ready
+        return 1
+    fi
+    cd -- "$WARI_PROJECT_ROOT"
+    exec "$WARI_RUNTIME_DIR/$command_name" "$@"
+}
+
+launcher_main() {
+    WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+    export WARI_PROJECT_ROOT WARI_RUNTIME_DIR
+
+    if [[ "${1-}" == '--version-value' ]]; then
+        printf '%s\n' "$WARI_VERSION"
+        return 0
+    fi
+    if [[ "${1-}" == '--validate-pair' ]]; then
+        [[ "$#" -eq 2 ]] || return 2
+        validate_launcher_pair "$WARI_PROJECT_ROOT/wari" "$2"
+        return
+    fi
+    validate_launcher_pair "$WARI_PROJECT_ROOT/wari" \
+        "$WARI_PROJECT_ROOT/wari.lock" || return 1
+
+    case "${1-}" in
+        ''|help|--help|-h) launcher_usage ;;
+        --version) printf 'Wari %s\n' "$WARI_VERSION" ;;
+        setup)
+            shift
+            setup_main "$@"
+            ;;
+        update)
+            shift
+            update_main "$@"
+            ;;
+        php|composer|create-project|serve|frankenphp)
+            local command_name="$1"
+            shift
+            dispatch_runtime "$command_name" "$@"
+            ;;
+        *)
+            die "unknown Wari command: $1" || true
+            launcher_usage >&2
+            return 1
+            ;;
+    esac
+}
+
+reset_lock_state
+
+if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]-}" == "$0" ]]; then
+    launcher_main "$@"
+fi

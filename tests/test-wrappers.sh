@@ -7,8 +7,8 @@ CORE_DIR="$(dirname -- "$TEST_DIR")"
 
 # shellcheck source=test-helper.sh
 source "$TEST_DIR/test-helper.sh"
-# shellcheck source=../install.sh
-source "$CORE_DIR/install.sh"
+# shellcheck source=../wari
+source "$CORE_DIR/wari"
 
 if ! declare -F generate_wrappers >/dev/null 2>&1; then
     fail 'wrapper generator exists'
@@ -24,6 +24,7 @@ WARI="$PROJECT/.wari"
 DISPATCHER="$PROJECT/wari"
 CAPTURE="$WRAPPER_TMP/capture"
 mkdir -p "$WARI/runtime" "$PROJECT/nested/path"
+printf '%s\n' 'Wari runtime layout 2' >"$WARI/.wari-owned"
 
 {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -36,21 +37,50 @@ mkdir -p "$WARI/runtime" "$PROJECT/nested/path"
     printf '%s\n' '  index=$((index + 1))'
     printf '%s\n' 'done'
     printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\nxdg_config_home=%s\nxdg_data_home=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" "${XDG_CONFIG_HOME-}" "${XDG_DATA_HOME-}" >>"$FAKE_CAPTURE"'
+    printf '%s\n' 'case "${1-}/${2-}/${3-}" in'
+    printf '%s\n' '  php-cli/*php-proxy.php/version) printf '\''PHP 8.4.0 (cli)\n'\''; exit 0 ;;'
+    printf '%s\n' '  php-cli/*composer.phar/--version) printf '\''Composer version 2.8.11 2025-01-01\n'\''; exit 0 ;;'
+    printf '%s\n' '  version//) printf '\''FrankenPHP v1.12.7\n'\''; exit 0 ;;'
+    printf '%s\n' 'esac'
     printf '%s\n' 'exit "${FAKE_EXIT_CODE:-0}"'
 } >"$WARI/runtime/frankenphp"
 chmod 755 "$WARI/runtime/frankenphp"
 printf 'fake composer' >"$WARI/runtime/composer.phar"
 
 generate_wrappers "$WARI"
+cp "$CORE_DIR/wari" "$DISPATCHER"
+cp "$CORE_DIR/wari.lock" "$PROJECT/wari.lock"
+chmod 755 "$DISPATCHER"
 
-if ! declare -F generate_dispatcher >/dev/null 2>&1; then
-    fail 'dispatcher generator exists'
-    finish_tests
-    exit $?
+case "$(uname -s)" in
+    Linux) TEST_OS='linux' ;;
+    Darwin) TEST_OS='darwin' ;;
+esac
+case "$(uname -m)" in
+    x86_64|amd64) TEST_ARCH='x86_64' ;;
+    arm64|aarch64) TEST_ARCH='arm64' ;;
+esac
+if [[ "$TEST_OS" == 'linux' ]]; then
+    TEST_LINUX_BUILD='"static"'
+else
+    TEST_LINUX_BUILD='null'
 fi
-
-generate_dispatcher "$WARI"
-mv -- "$WARI/wari" "$DISPATCHER"
+LOCK_SHA="$(lock_digest "$PROJECT/wari.lock")"
+cat >"$WARI/manifest.json" <<EOF
+{
+  "layout_version": 2,
+  "lock_sha256": "$LOCK_SHA",
+  "wari_version": "0.2.0",
+  "frankenphp_version": "1.12.7",
+  "php_version": "8.4.0",
+  "composer_version": "2.8.11",
+  "os": "$TEST_OS",
+  "architecture": "$TEST_ARCH",
+  "linux_build": $TEST_LINUX_BUILD,
+  "checksum_verified": true,
+  "slsa_verified": false
+}
+EOF
 
 (
     cd "$PROJECT/nested/path"
@@ -196,19 +226,20 @@ UNKNOWN_OUTPUT="$(FAKE_CAPTURE="$CAPTURE" "$DISPATCHER" unknown 2>&1)"
 UNKNOWN_STATUS=$?
 set -e
 assert_eq '1' "$UNKNOWN_STATUS" 'dispatcher rejects unknown command'
-assert_contains "$UNKNOWN_OUTPUT" 'Unknown Wari command: unknown' 'dispatcher identifies unknown command'
+assert_contains "$UNKNOWN_OUTPUT" 'unknown Wari command: unknown' 'dispatcher identifies unknown command'
 assert_contains "$UNKNOWN_OUTPUT" 'Usage:' 'dispatcher prints usage for unknown command'
 assert_eq 'not-invoked' "$(<"$CAPTURE")" 'dispatcher does not invoke runtime for unknown command'
 
 ORPHAN_PROJECT="$WRAPPER_TMP/orphan"
 mkdir -p "$ORPHAN_PROJECT"
 cp "$DISPATCHER" "$ORPHAN_PROJECT/wari"
+cp "$CORE_DIR/wari.lock" "$ORPHAN_PROJECT/wari.lock"
 set +e
 MISSING_OUTPUT="$("$ORPHAN_PROJECT/wari" php --version 2>&1)"
 MISSING_STATUS=$?
 set -e
 assert_eq '1' "$MISSING_STATUS" 'dispatcher rejects missing hidden runtime'
-assert_contains "$MISSING_OUTPUT" 'Wari runtime directory does not exist' 'dispatcher explains missing hidden runtime'
+assert_contains "$MISSING_OUTPUT" './wari setup' 'dispatcher explains missing hidden runtime'
 
 set +e
 FAKE_CAPTURE="$CAPTURE" FAKE_EXIT_CODE=17 "$DISPATCHER" php script.php >/dev/null 2>&1

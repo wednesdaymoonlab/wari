@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+    printf '%s\n' \
+        'Usage: ./wari <command> [arguments]' \
+        '' \
+        'Commands:' \
+        '  php          Run project-local PHP' \
+        '  composer     Run project-local Composer' \
+        '  create-project  Create a Composer project in this directory' \
+        '  serve        Serve ./public at http://127.0.0.1:8000' \
+        '  frankenphp   Run the bundled FrankenPHP binary' \
+        '  help         Show this help'
+}
+
+WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
+export WARI_PROJECT_ROOT WARI_RUNTIME_DIR
+
+if [[ ! -d "$WARI_RUNTIME_DIR" ]]; then
+    printf 'Error: Wari runtime directory does not exist: %s\n' "$WARI_RUNTIME_DIR" >&2
+    exit 1
+fi
+
+command_name="${1-}"
+case "$command_name" in
+    ''|help|--help|-h)
+        usage
+        ;;
+    php|composer|create-project|serve|frankenphp)
+        shift
+        exec "$WARI_RUNTIME_DIR/$command_name" "$@"
+        ;;
+    *)
+        printf 'Error: Unknown Wari command: %s\n\n' "$command_name" >&2
+        usage >&2
+        exit 1
+        ;;
+esac

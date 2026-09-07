@@ -8,6 +8,7 @@ Status: **Verified** with Laravel Framework 13.30.1.
 mkdir laravel-project
 cd laravel-project
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project laravel/laravel
 ```
 

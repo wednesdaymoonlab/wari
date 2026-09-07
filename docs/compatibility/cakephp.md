@@ -9,6 +9,7 @@ are verified; web, database, and test-suite checks remain to be completed.
 mkdir cakephp-app
 cd cakephp-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project "cakephp/app:^5.0" --prefer-dist
 ```
 

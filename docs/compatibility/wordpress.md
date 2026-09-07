@@ -12,6 +12,7 @@ After extracting or cloning WordPress, install Wari in the WordPress root:
 ```bash
 cd wordpress-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ```
 
 ## Database

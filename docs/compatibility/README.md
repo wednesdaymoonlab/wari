@@ -46,29 +46,32 @@ The guides use Wari from the framework or CMS project root:
 example-app/
 ├── .wari/
 ├── wari
+├── wari.lock
 ├── composer.json
 └── ...
 ```
 
-All runtime commands therefore start with `./wari`. The generated `wari` and
-`.wari/` paths are local development tools; do not commit them with application
-source. Add both to the application's `.gitignore` when necessary:
+All runtime commands therefore start with `./wari`. Commit `wari` and
+`wari.lock` with the application so every developer and CI uses the same tool
+versions. Only the machine-specific `.wari/` directory is local and ignored:
 
 ```gitignore
 /.wari/
-/wari
 ```
 
 ### Existing project
 
-For a cloned, downloaded, or otherwise existing project, install Wari directly
-in its root and install dependencies:
+For a clone that already contains `wari` and `wari.lock`, create the local
+runtime and install dependencies:
 
 ```bash
 cd example-app
-curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari composer install
 ```
+
+Run the remote initializer first only when adding Wari to a project that does
+not track it yet.
 
 ### New Composer project without global PHP
 
@@ -79,13 +82,16 @@ wrapper:
 mkdir example-app
 cd example-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project vendor/project
 ```
 
 Replace `vendor/project` and `example-app` with the values shown in each guide.
 Wari creates the Composer project in an automatically cleaned sibling staging
-directory, then publishes it beside `wari` and `.wari/`; no manual relocation
-is needed.
+directory, then publishes it beside `wari`, `wari.lock`, `.wari/`, and the
+managed `.gitignore`; no manual relocation is needed.
+The bootstrap `.gitignore` must contain only Wari's managed block; add custom
+ignore rules after `create-project` completes.
 
 Each guide separates observed results from upstream features that have not yet
 been tested. Stop any foreground server with `Ctrl-C` after verification.

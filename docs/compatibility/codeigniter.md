@@ -10,6 +10,7 @@ current `php -S` translation.
 mkdir codeigniter-app
 cd codeigniter-app
 curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.sh | bash
+./wari setup
 ./wari create-project codeigniter4/appstarter
 ```
 
