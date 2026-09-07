@@ -107,6 +107,12 @@ Wari does not invent or overwrite a home directory.
 Windows, Git Bash, and WSL are not officially supported in v1. The GNU Linux
 option requires glibc; choose the fully static build for maximum portability.
 
+## Framework and CMS compatibility
+
+See the [compatibility guides](docs/compatibility/README.md) for the versions,
+commands, test results, and known limitations recorded while running Laravel,
+Symfony, WordPress, CodeIgniter, Slim, and CakePHP with Wari.
+
 ## Verification and security
 
 Wari downloads only from the official GitHub, FrankenPHP, and Composer hosts.
