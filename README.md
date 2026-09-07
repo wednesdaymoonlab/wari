@@ -13,10 +13,11 @@ curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.
 ./wari setup
 ```
 
-The initializer adds three project files: the portable `wari` launcher, the
-version/checksum policy in `wari.lock`, and a managed block in `.gitignore`.
-It does not download PHP or Composer. `./wari setup` explicitly creates the
-machine-specific runtime in ignored `.wari/`.
+The initializer downloads the portable `wari` launcher from an exact Wari Git
+tag, generates the version/checksum policy in `wari.lock` from official
+FrankenPHP and Composer metadata, and adds a managed block in `.gitignore`.
+It does not download PHP or Composer binaries. `./wari setup` explicitly
+creates the machine-specific runtime in ignored `.wari/`.
 
 Commit `wari`, `wari.lock`, and `.gitignore`. Do not commit `.wari/`. Teammates
 on Linux, Intel macOS, and Apple Silicon macOS share the same tracked launcher
@@ -40,6 +41,18 @@ The initializer refuses to overwrite an existing `wari` or `wari.lock`.
 Existing installations from the older linked-launcher layout can opt into the
 strict migration path with `bash install.sh --migrate`; it preserves the old
 runtime, installs the tracked pair, and then requires `./wari setup`.
+
+Pin runtime dependencies during initialization when needed:
+
+```bash
+bash wari-install.sh \
+  --frankenphp 1.12.7 \
+  --composer 2.8.11 \
+  --linux-build static
+```
+
+Without exact dependency options, the initializer selects the latest stable
+FrankenPHP and Composer releases. Linux defaults to the fully static build.
 
 ### Clone and CI workflow
 
@@ -115,18 +128,39 @@ still reporting download errors and retries.
 manifest, and internal wrappers live in the adjacent hidden `.wari/` directory.
 The earlier `./wari/php` directory interface is intentionally unsupported.
 
-Update Wari intentionally and review it like any dependency change:
+Update the locked FrankenPHP and Composer dependencies intentionally:
 
 ```bash
 ./wari update
+git diff -- wari.lock
+./wari setup
+```
+
+With no version options, both dependencies move to their latest stable
+releases. An exact override may be supplied for either dependency; the omitted
+dependency still resolves latest stable:
+
+```bash
+./wari update --frankenphp 1.12.7 --composer 2.10.3
+./wari update --linux-build gnu
+```
+
+`update` replaces only `wari.lock` and preserves the current Linux build unless
+overridden. It never changes the launcher, `.wari/`, Composer application
+dependencies, Git history, or remotes.
+
+Update the Wari launcher separately from an exact immutable Git tag:
+
+```bash
+./wari self-update 0.3.0
 git diff -- wari wari.lock
 ./wari setup
 ```
 
-`update` replaces only the tracked launcher and lock. It never changes
-`.wari/`, installs Composer dependencies, commits, or pushes. After review,
-each developer and CI runner recreates or refreshes its own runtime with
-`./wari setup`.
+`self-update` preserves the exact locked FrankenPHP and Composer versions,
+refreshes their official checksum metadata, and leaves `.wari/` untouched.
+Both update commands make the existing runtime stale through the changed lock,
+so setup remains an explicit review step.
 
 `./wari serve` is a local-development shortcut. It requires `./public`, binds
 only to `127.0.0.1:8000`, and does not accept custom options. Use the transparent
@@ -184,6 +218,12 @@ Symfony, WordPress, CodeIgniter, Slim, and CakePHP with Wari.
 ## Verification and security
 
 Wari downloads only from the official GitHub, FrankenPHP, and Composer hosts.
+The initializer obtains the launcher over HTTPS from an exact semantic-version
+Git tag, validates its embedded version, and records its calculated SHA-256 in
+the generated lock. Protect published version tags from deletion or movement;
+the initial download trust boundary is GitHub HTTPS and repository access
+control, not a separately signed release artifact.
+
 `wari.lock` pins exact Wari, FrankenPHP, Composer, platform artifact, and
 checksum values. Setup verifies the FrankenPHP artifact, Composer installer,
 and installed Composer PHAR against the committed lock. There is no option to
@@ -206,7 +246,8 @@ GitHub CLI is optional and is never installed or invoked by Wari.
 
 - Runtime is missing, stale, or for another platform: run `./wari setup`.
 - GitHub API rate limit: wait for the unauthenticated limit to reset, then retry
-  the initializer or update. Wari never falls back to an unverified download.
+  lock generation, initialization, or dependency update. Wari never falls back
+  to an unverified download.
 - `.wari/` exists but is not recognized: inspect it manually. Setup refuses to
   move or delete a directory it cannot prove belongs to Wari.
 - `wari` does not match `wari.lock`: restore the tracked pair from Git or review
@@ -221,6 +262,17 @@ GitHub CLI is optional and is never installed or invoked by Wari.
   policy. Wari does not disable quarantine or system security controls.
 
 ## Development
+
+Initialize a test project from the current working source before a matching Git
+tag exists:
+
+```bash
+bash ../../core/install.sh --local-source ../../core
+```
+
+Publishing a Wari version requires pushing the tested source commit and then a
+matching immutable tag such as `v0.2.1`. A GitHub Release is optional; the
+initializer does not consume Release assets.
 
 Run offline tests:
 

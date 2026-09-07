@@ -31,9 +31,13 @@ HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
     WARI_NETWORK_MARKER="$NETWORK_MARKER" ./wari help)"
 assert_contains "$HELP_OUTPUT" 'setup' 'help lists setup before a runtime exists'
 assert_contains "$HELP_OUTPUT" 'composer' 'help lists runtime commands before setup'
+assert_contains "$HELP_OUTPUT" 'Update locked FrankenPHP and Composer' \
+    'help describes update as dependency-only'
+assert_contains "$HELP_OUTPUT" 'self-update VERSION' \
+    'help lists exact launcher self-update separately'
 
 VERSION_OUTPUT="$(cd "$PROJECT" && ./wari --version)"
-assert_contains "$VERSION_OUTPUT" 'Wari 0.2.0' 'version works before setup'
+assert_contains "$VERSION_OUTPUT" 'Wari 0.2.1' 'version works before setup'
 
 for command_name in php composer serve frankenphp create-project; do
     set +e
@@ -107,7 +111,7 @@ FAKE_RUNTIME
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.2.0",
+  "wari_version": "0.2.1",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",

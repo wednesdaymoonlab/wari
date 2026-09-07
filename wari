@@ -2,12 +2,19 @@
 
 set -Eeuo pipefail
 
-WARI_VERSION='0.2.0'
+WARI_VERSION='0.2.1'
 WARI_RUNTIME_OWNER='Wari runtime layout 2'
 
 die() {
     printf 'Error: %s\n' "$1" >&2
     return 1
+}
+
+validate_semver() {
+    [[ "${1-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        die "invalid semantic version: ${1-}"
+        return 1
+    }
 }
 
 reset_lock_state() {
@@ -228,6 +235,7 @@ curl_to_file() {
     local attempt=1
     local max_attempts=4
     local status
+    local effective_url
     local -a output_options
 
     while ((attempt <= max_attempts)); do
@@ -243,9 +251,15 @@ curl_to_file() {
             output_options=(--silent)
         fi
 
-        if curl --fail --show-error "${output_options[@]}" --location \
-            --connect-timeout 15 "$@" "$url" -o "$destination"; then
-            return 0
+        if effective_url="$(curl --fail --show-error "${output_options[@]}" \
+            --location --proto '=https' --proto-redir '=https' \
+            --write-out '%{url_effective}' --connect-timeout 15 \
+            "$@" "$url" -o "$destination")"; then
+            if validate_effective_download_url "$url" "$effective_url"; then
+                return 0
+            fi
+            rm -f -- "$destination"
+            return 1
         else
             status=$?
         fi
@@ -259,13 +273,43 @@ curl_to_file() {
     done
 }
 
+validate_effective_download_url() {
+    local initial_url="$1"
+    local effective_url="$2"
+
+    case "$initial_url" in
+        https://api.github.com/*)
+            [[ "$effective_url" == https://api.github.com/* ]]
+            ;;
+        https://github.com/php/frankenphp/releases/download/*)
+            [[ "$effective_url" == "$initial_url" ||
+                "$effective_url" == https://release-assets.githubusercontent.com/* ]]
+            ;;
+        https://getcomposer.org/*)
+            [[ "$effective_url" == https://getcomposer.org/* ]]
+            ;;
+        https://composer.github.io/*)
+            [[ "$effective_url" == https://composer.github.io/* ]]
+            ;;
+        https://raw.githubusercontent.com/wednesdaymoonlab/wari/*)
+            [[ "$effective_url" == "$initial_url" ]]
+            ;;
+        *) return 1 ;;
+    esac || {
+        die "download redirected to an unsupported URL: $effective_url"
+        return 1
+    }
+}
+
 download_file() {
     local url="$1"
     local destination="$2"
     local progress_label="${3-}"
 
     case "$url" in
-        https://api.github.com/*|https://github.com/*|https://getcomposer.org/*|https://composer.github.io/*) ;;
+        https://api.github.com/*|https://github.com/*|https://getcomposer.org/*|\
+        https://composer.github.io/*|\
+        https://raw.githubusercontent.com/wednesdaymoonlab/wari/*) ;;
         *)
             die "refusing download from unsupported URL: $url"
             return 1
@@ -273,6 +317,374 @@ download_file() {
     esac
 
     curl_to_file "$url" "$destination" "$progress_label"
+}
+
+read_frankenphp_release_asset() {
+    local json_file="$1"
+    local version="$2"
+    local asset_name="$3"
+    local record
+    local digest
+    local url
+    local expected_url
+
+    record="$(awk -v target="$asset_name" '
+        function string_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        /^[[:space:]]*"name":[[:space:]]*"/ {
+            value = string_value($0)
+            if (value == target) { matches++; active = 1 } else { active = 0 }
+            next
+        }
+        active && /^[[:space:]]*"digest":[[:space:]]*"/ {
+            digest = string_value($0)
+            next
+        }
+        active && /^[[:space:]]*"browser_download_url":[[:space:]]*"/ {
+            url = string_value($0)
+            active = 0
+        }
+        END {
+            if (matches != 1 || digest == "" || url == "") exit 2
+            printf "%s\t%s\n", digest, url
+        }
+    ' "$json_file")" || {
+        die "FrankenPHP release metadata has no unique complete asset named $asset_name"
+        return 1
+    }
+    IFS=$'\t' read -r digest url <<<"$record"
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+        die "FrankenPHP release asset has an invalid digest: $asset_name"
+        return 1
+    }
+    expected_url="https://github.com/php/frankenphp/releases/download/v$version/$asset_name"
+    [[ "$url" == "$expected_url" ]] || {
+        die "FrankenPHP release asset URL is not official: $asset_name"
+        return 1
+    }
+    printf '%s\n' "${digest#sha256:}"
+}
+
+parse_frankenphp_release() {
+    local json_file="$1"
+    local expected_version="$2"
+    local linux_build="$3"
+    local header
+    local tag
+    local draft
+    local prerelease
+    local linux_x86_asset='frankenphp-linux-x86_64'
+    local linux_arm_asset='frankenphp-linux-aarch64'
+
+    [[ "$linux_build" == static || "$linux_build" == gnu ]] || {
+        die "invalid Linux build: $linux_build"
+        return 1
+    }
+    header="$(awk '
+        function string_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        function scalar_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*/, "", value)
+            sub(/[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        /^[[:space:]]*"tag_name":/ { tags++; tag = string_value($0) }
+        /^[[:space:]]*"draft":/ { drafts++; draft = scalar_value($0) }
+        /^[[:space:]]*"prerelease":/ { pres++; pre = scalar_value($0) }
+        END {
+            if (tags != 1 || drafts != 1 || pres != 1) exit 2
+            printf "%s\t%s\t%s\n", tag, draft, pre
+        }
+    ' "$json_file")" || {
+        die 'invalid FrankenPHP release metadata'
+        return 1
+    }
+    IFS=$'\t' read -r tag draft prerelease <<<"$header"
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
+        "$draft" == false && "$prerelease" == false ]] || {
+        die 'FrankenPHP release must be a stable semantic version'
+        return 1
+    }
+    RESOLVED_FRANKENPHP_VERSION="${tag#v}"
+    if [[ -n "$expected_version" &&
+        "$RESOLVED_FRANKENPHP_VERSION" != "$expected_version" ]]; then
+        die 'FrankenPHP release version does not match the requested version'
+        return 1
+    fi
+    if [[ "$linux_build" == gnu ]]; then
+        linux_x86_asset="$linux_x86_asset-gnu"
+        linux_arm_asset="$linux_arm_asset-gnu"
+    fi
+    RESOLVED_FRANKENPHP_LINUX_X86_64_SHA256="$(read_frankenphp_release_asset \
+        "$json_file" "$RESOLVED_FRANKENPHP_VERSION" "$linux_x86_asset")" || return 1
+    RESOLVED_FRANKENPHP_LINUX_ARM64_SHA256="$(read_frankenphp_release_asset \
+        "$json_file" "$RESOLVED_FRANKENPHP_VERSION" "$linux_arm_asset")" || return 1
+    RESOLVED_FRANKENPHP_MACOS_X86_64_SHA256="$(read_frankenphp_release_asset \
+        "$json_file" "$RESOLVED_FRANKENPHP_VERSION" 'frankenphp-mac-x86_64')" || return 1
+    RESOLVED_FRANKENPHP_MACOS_ARM64_SHA256="$(read_frankenphp_release_asset \
+        "$json_file" "$RESOLVED_FRANKENPHP_VERSION" 'frankenphp-mac-arm64')" || return 1
+}
+
+parse_composer_latest() {
+    local json_file="$1"
+    local record
+    local path
+    local version
+
+    record="$(awk '
+        function string_value(line, value) {
+            value = line
+            sub(/^[^:]*:[[:space:]]*"/, "", value)
+            sub(/"[,]*[[:space:]]*$/, "", value)
+            return value
+        }
+        /^[[:space:]]*"stable":[[:space:]]*\[/ {
+            stable_sections++
+            in_stable = 1
+            next
+        }
+        in_stable && /^[[:space:]]*\]/ { in_stable = 0 }
+        in_stable && !object_seen && /^[[:space:]]*\{/ {
+            object_seen = 1
+            in_first_object = 1
+            next
+        }
+        in_first_object && /^[[:space:]]*\}/ {
+            in_first_object = 0
+            object_closed = 1
+            next
+        }
+        in_first_object && /^[[:space:]]*"path":[[:space:]]*"/ {
+            path_fields++
+            path = string_value($0)
+        }
+        in_first_object && /^[[:space:]]*"version":[[:space:]]*"/ {
+            version_fields++
+            version = string_value($0)
+        }
+        END {
+            if (stable_sections != 1 || !object_closed ||
+                path_fields != 1 || version_fields != 1 ||
+                path == "" || version == "") exit 2
+            printf "%s\t%s\n", version, path
+        }
+    ' "$json_file")" || {
+        die 'invalid Composer versions metadata'
+        return 1
+    }
+    IFS=$'\t' read -r version path <<<"$record"
+    validate_semver "$version" || return 1
+    [[ "$path" == "/download/$version/composer.phar" ]] || {
+        die 'Composer stable metadata has an invalid download path'
+        return 1
+    }
+    RESOLVED_COMPOSER_VERSION="$version"
+}
+
+read_checksum_value() {
+    local path="$1"
+    local length="$2"
+    local label="$3"
+    local value
+
+    value="$(awk '
+        NF {
+            lines++
+            if (NF > 2 || (NF == 2 && $2 != "composer.phar")) invalid = 1
+            checksum = $1
+        }
+        END {
+            if (lines != 1 || invalid || checksum == "") exit 2
+            print checksum
+        }
+    ' "$path")" || {
+        die "$label checksum metadata is invalid"
+        return 1
+    }
+    if [[ "$length" == 64 ]]; then
+        [[ "$value" =~ ^[0-9a-f]{64}$ ]] || {
+            die "$label checksum metadata is invalid"
+            return 1
+        }
+    elif [[ "$length" == 96 ]]; then
+        [[ "$value" =~ ^[0-9a-f]{96}$ ]] || {
+            die "$label checksum metadata is invalid"
+            return 1
+        }
+    else
+        die "unsupported checksum metadata length: $length"
+        return 1
+    fi
+    printf '%s\n' "$value"
+}
+
+generate_lock_file() (
+    local launcher="$1"
+    local requested_output="$2"
+    local frankenphp_request="$3"
+    local composer_request="$4"
+    local linux_build="$5"
+    local output_parent output_base output staging release_url release_json
+    local composer_versions composer_sha_file installer_sha_file
+    local launcher_version launcher_sha composer_sha installer_sha candidate
+
+    [[ -f "$launcher" && ! -L "$launcher" ]] || {
+        die "invalid Wari launcher: $launcher"
+        return 1
+    }
+    [[ ! -L "$requested_output" &&
+        ( ! -e "$requested_output" || -f "$requested_output" ) ]] || {
+        die "invalid lock output: $requested_output"
+        return 1
+    }
+    output_parent="$(CDPATH= cd -- "$(dirname -- "$requested_output")" && pwd -P)" || {
+        die "invalid lock output parent: $requested_output"
+        return 1
+    }
+    output_base="$(basename -- "$requested_output")"
+    [[ "$output_base" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || {
+        die "invalid lock output name: $output_base"
+        return 1
+    }
+    output="$output_parent/$output_base"
+    [[ ! -L "$output" && ( ! -e "$output" || -f "$output" ) ]] || {
+        die "invalid lock output: $output"
+        return 1
+    }
+    [[ "$linux_build" == static || "$linux_build" == gnu ]] || {
+        die "invalid Linux build: $linux_build"
+        return 1
+    }
+    [[ -z "$frankenphp_request" ]] || validate_semver "$frankenphp_request" || return 1
+    [[ -z "$composer_request" ]] || validate_semver "$composer_request" || return 1
+
+    launcher_version="$(bash "$launcher" --version-value)" || return 1
+    validate_semver "$launcher_version" || return 1
+    launcher_sha="$(calculate_checksum sha256 "$launcher")" || return 1
+
+    staging="$(mktemp -d "$output_parent/.wari-lock.XXXXXX")" || return $?
+    cleanup_generated_lock() {
+        local status=$?
+        case "$staging" in
+            "$output_parent"/.wari-lock.?*) rm -rf -- "$staging" ;;
+        esac
+        exit "$status"
+    }
+    trap cleanup_generated_lock EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+
+    release_json="$staging/frankenphp-release.json"
+    if [[ -n "$frankenphp_request" ]]; then
+        release_url="https://api.github.com/repos/php/frankenphp/releases/tags/v$frankenphp_request"
+    else
+        release_url='https://api.github.com/repos/php/frankenphp/releases/latest'
+    fi
+    download_file "$release_url" "$release_json" || return 1
+    parse_frankenphp_release "$release_json" "$frankenphp_request" "$linux_build" || return 1
+
+    if [[ -n "$composer_request" ]]; then
+        RESOLVED_COMPOSER_VERSION="$composer_request"
+    else
+        composer_versions="$staging/composer-versions.json"
+        download_file 'https://getcomposer.org/versions' "$composer_versions" || return 1
+        parse_composer_latest "$composer_versions" || return 1
+    fi
+    composer_sha_file="$staging/composer.sha256sum"
+    download_file \
+        "https://getcomposer.org/download/$RESOLVED_COMPOSER_VERSION/composer.phar.sha256sum" \
+        "$composer_sha_file" || return 1
+    composer_sha="$(read_checksum_value "$composer_sha_file" 64 Composer)" || return 1
+    installer_sha_file="$staging/composer-installer.sig"
+    download_file 'https://composer.github.io/installer.sig' "$installer_sha_file" || return 1
+    installer_sha="$(read_checksum_value "$installer_sha_file" 96 'Composer installer')" || return 1
+
+    candidate="$staging/wari.lock"
+    {
+        printf 'lock_version=1\n'
+        printf 'wari_version=%s\n' "$launcher_version"
+        printf 'frankenphp_version=%s\n' "$RESOLVED_FRANKENPHP_VERSION"
+        printf 'composer_version=%s\n' "$RESOLVED_COMPOSER_VERSION"
+        printf 'linux_build=%s\n' "$linux_build"
+        printf 'wari_sha256=%s\n' "$launcher_sha"
+        printf 'composer_installer_sha384=%s\n' "$installer_sha"
+        printf 'composer_sha256=%s\n' "$composer_sha"
+        printf 'frankenphp_linux_x86_64_sha256=%s\n' \
+            "$RESOLVED_FRANKENPHP_LINUX_X86_64_SHA256"
+        printf 'frankenphp_linux_arm64_sha256=%s\n' \
+            "$RESOLVED_FRANKENPHP_LINUX_ARM64_SHA256"
+        printf 'frankenphp_macos_x86_64_sha256=%s\n' \
+            "$RESOLVED_FRANKENPHP_MACOS_X86_64_SHA256"
+        printf 'frankenphp_macos_arm64_sha256=%s\n' \
+            "$RESOLVED_FRANKENPHP_MACOS_ARM64_SHA256"
+    } >"$candidate" || return 1
+    validate_launcher_pair "$launcher" "$candidate" || return 1
+    mv -- "$candidate" "$output" || return 1
+    rm -rf -- "$staging"
+    trap - EXIT INT TERM HUP
+)
+
+generate_lock_main() {
+    local output="${1-}"
+    local frankenphp_request=''
+    local composer_request=''
+    local linux_build='static'
+    local seen_frankenphp=0 seen_composer=0 seen_linux_build=0
+    local launcher
+
+    [[ -n "$output" ]] || {
+        die 'Usage: ./wari --generate-lock OUTPUT [--frankenphp VERSION] [--composer VERSION] [--linux-build static|gnu]'
+        return 2
+    }
+    shift
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --frankenphp)
+                [[ "$seen_frankenphp" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --frankenphp option'
+                    return 2
+                }
+                seen_frankenphp=1
+                frankenphp_request="$2"
+                shift 2
+                ;;
+            --composer)
+                [[ "$seen_composer" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --composer option'
+                    return 2
+                }
+                seen_composer=1
+                composer_request="$2"
+                shift 2
+                ;;
+            --linux-build)
+                [[ "$seen_linux_build" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --linux-build option'
+                    return 2
+                }
+                seen_linux_build=1
+                linux_build="$2"
+                shift 2
+                ;;
+            *)
+                die "unknown lock generator option: $1"
+                return 2
+                ;;
+        esac
+    done
+    launcher="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/wari"
+    generate_lock_file "$launcher" "$output" "$frankenphp_request" \
+        "$composer_request" "$linux_build"
 }
 
 verify_checksum() {
@@ -485,6 +897,22 @@ confirm_setup() {
     esac
 }
 
+confirm_tracked_change() {
+    local prompt="$1"
+    local answer
+
+    if ! { exec 3</dev/tty 4>/dev/tty; } 2>/dev/null; then
+        die 'tracked-file update requires confirmation; pass --yes for automation'
+        return 2
+    fi
+    printf '%s [y/N]: ' "$prompt" >&4
+    IFS= read -r answer <&3 || return 2
+    case "$answer" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 setup_main() (
     local assume_yes=0
     local argument
@@ -583,105 +1011,6 @@ setup_main() (
     printf 'Wari runtime is ready.\n'
 )
 
-read_wari_release_asset() {
-    local json_file="$1"
-    local asset_name="$2"
-    local record
-    local digest
-    local url
-
-    record="$(awk -v target="$asset_name" '
-        function string_value(line, value) {
-            value = line
-            sub(/^[^:]*:[[:space:]]*"/, "", value)
-            sub(/"[,]*[[:space:]]*$/, "", value)
-            return value
-        }
-        /^[[:space:]]*"name":[[:space:]]*"/ {
-            value = string_value($0)
-            if (value == target) { matches++; active = 1 } else { active = 0 }
-            next
-        }
-        active && /^[[:space:]]*"digest":[[:space:]]*"/ {
-            digest = string_value($0); next
-        }
-        active && /^[[:space:]]*"browser_download_url":[[:space:]]*"/ {
-            url = string_value($0); active = 0
-        }
-        END {
-            if (matches != 1 || digest == "" || url == "") exit 2
-            printf "%s\t%s\n", digest, url
-        }
-    ' "$json_file")" || return 1
-    IFS=$'\t' read -r digest url <<<"$record"
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    printf '%s\t%s\n' "${digest#sha256:}" "$url"
-}
-
-parse_wari_release() {
-    local json_file="$1"
-    local header
-    local wari_record
-    local lock_record
-
-    header="$(awk '
-        function string_value(line, value) {
-            value = line
-            sub(/^[^:]*:[[:space:]]*"/, "", value)
-            sub(/"[,]*[[:space:]]*$/, "", value)
-            return value
-        }
-        function scalar_value(line, value) {
-            value = line
-            sub(/^[^:]*:[[:space:]]*/, "", value)
-            sub(/[,]*[[:space:]]*$/, "", value)
-            return value
-        }
-        /^[[:space:]]*"tag_name":/ { tags++; tag = string_value($0) }
-        /^[[:space:]]*"draft":/ { drafts++; draft = scalar_value($0) }
-        /^[[:space:]]*"prerelease":/ { pres++; pre = scalar_value($0) }
-        END {
-            if (tags != 1 || drafts != 1 || pres != 1) exit 2
-            printf "%s\t%s\t%s\n", tag, draft, pre
-        }
-    ' "$json_file")" || { die 'invalid Wari release metadata'; return 1; }
-    IFS=$'\t' read -r WARI_RELEASE_TAG release_draft release_prerelease <<<"$header"
-    [[ "$WARI_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
-        "$release_draft" == 'false' && "$release_prerelease" == 'false' ]] || {
-        die 'Wari release must be a stable semantic version'
-        return 1
-    }
-
-    wari_record="$(read_wari_release_asset "$json_file" wari)" || return 1
-    lock_record="$(read_wari_release_asset "$json_file" wari.lock)" || return 1
-    IFS=$'\t' read -r WARI_ASSET_SHA256 WARI_ASSET_URL <<<"$wari_record"
-    IFS=$'\t' read -r WARI_LOCK_ASSET_SHA256 WARI_LOCK_ASSET_URL <<<"$lock_record"
-    [[ "$WARI_ASSET_URL" == \
-        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari" &&
-        "$WARI_LOCK_ASSET_URL" == \
-        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari.lock" ]] || {
-        die 'Wari release asset URL is not official'
-        return 1
-    }
-}
-
-
-fetch_wari_update() {
-    local staging="$1"
-    local release_json="$staging/wari-release.json"
-
-    download_file \
-        'https://api.github.com/repos/wednesdaymoonlab/wari/releases/latest' \
-        "$release_json" || return 1
-    parse_wari_release "$release_json" || return 1
-    download_file "$WARI_ASSET_URL" "$staging/wari" 'Wari launcher' || return 1
-    verify_checksum sha256 "$WARI_ASSET_SHA256" "$staging/wari" || return 1
-    download_file "$WARI_LOCK_ASSET_URL" "$staging/wari.lock" 'Wari lock' || return 1
-    verify_checksum sha256 "$WARI_LOCK_ASSET_SHA256" "$staging/wari.lock" || return 1
-    rm -f -- "$release_json"
-    chmod 755 "$staging/wari"
-}
-
 validate_launcher_pair() {
     local launcher="$1"
     local lock="$2"
@@ -701,57 +1030,129 @@ validate_launcher_pair() {
     }
 }
 
+generate_update_lock() {
+    local launcher="$1"
+    local output="$2"
+    local frankenphp_request="$3"
+    local composer_request="$4"
+    local linux_build="$5"
+    local -a arguments
+
+    arguments=(--generate-lock "$output" --linux-build "$linux_build")
+    [[ -z "$frankenphp_request" ]] || arguments+=(--frankenphp "$frankenphp_request")
+    [[ -z "$composer_request" ]] || arguments+=(--composer "$composer_request")
+    bash "$launcher" "${arguments[@]}"
+}
+
 update_main() (
     local assume_yes=0
-    local current_version
-    local candidate_version
-    local staging
-    local launcher_published=0
-    local lock_published=0
+    local frankenphp_request=''
+    local composer_request=''
+    local linux_build_request=''
+    local seen_frankenphp=0 seen_composer=0 seen_linux_build=0
+    local current_wari_version current_wari_sha current_frankenphp current_composer
+    local current_linux_build candidate_wari_version candidate_wari_sha
+    local candidate_frankenphp candidate_composer candidate_linux_build
+    local staging confirm_status
+    local lock_published=0 restore_failed=0
 
-    case "${1-}" in
-        --yes) assume_yes=1; shift ;;
-        --help|-h)
-            printf '%s\n' 'Usage: ./wari update [--yes]'
-            return 0
-            ;;
-    esac
-    [[ "$#" -eq 0 ]] || { die "unknown update option: $1"; return 2; }
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --yes) assume_yes=1; shift ;;
+            --frankenphp)
+                [[ "$seen_frankenphp" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --frankenphp option'; return 2;
+                }
+                seen_frankenphp=1; frankenphp_request="$2"; shift 2
+                ;;
+            --composer)
+                [[ "$seen_composer" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --composer option'; return 2;
+                }
+                seen_composer=1; composer_request="$2"; shift 2
+                ;;
+            --linux-build)
+                [[ "$seen_linux_build" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --linux-build option'; return 2;
+                }
+                seen_linux_build=1; linux_build_request="$2"; shift 2
+                ;;
+            --help|-h)
+                printf '%s\n' \
+                    'Usage: ./wari update [--yes] [--frankenphp VERSION]' \
+                    '       [--composer VERSION] [--linux-build static|gnu]'
+                return 0
+                ;;
+            *) die "unknown update option: $1"; return 2 ;;
+        esac
+    done
+    [[ -z "$frankenphp_request" ]] || validate_semver "$frankenphp_request" || return 2
+    [[ -z "$composer_request" ]] || validate_semver "$composer_request" || return 2
+    [[ -z "$linux_build_request" || "$linux_build_request" == static ||
+        "$linux_build_request" == gnu ]] || {
+        die "invalid Linux build: $linux_build_request"; return 2;
+    }
 
     WARI_PROJECT_ROOT="${WARI_PROJECT_ROOT:-$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)}"
     WARI_LAUNCHER="${WARI_LAUNCHER:-$WARI_PROJECT_ROOT/wari}"
     validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
-    current_version="$LOCK_WARI_VERSION"
+    current_wari_version="$LOCK_WARI_VERSION"
+    current_wari_sha="$LOCK_WARI_SHA256"
+    current_frankenphp="$LOCK_FRANKENPHP_VERSION"
+    current_composer="$LOCK_COMPOSER_VERSION"
+    current_linux_build="$LOCK_LINUX_BUILD"
+    [[ -n "$linux_build_request" ]] || linux_build_request="$current_linux_build"
 
-    staging="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-update.XXXXXX")"
-    cleanup_update() {
+    staging="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-update.XXXXXX")" || return $?
+    cleanup_dependency_update() {
         local status=$?
         if [[ "$lock_published" -eq 1 && -f "$staging/wari.lock.old" ]]; then
-            cp "$staging/wari.lock.old" "$WARI_PROJECT_ROOT/wari.lock" || true
+            cp "$staging/wari.lock.old" "$WARI_PROJECT_ROOT/wari.lock" || \
+                restore_failed=1
         fi
-        if [[ "$launcher_published" -eq 1 && -f "$staging/wari.old" ]]; then
-            cp "$staging/wari.old" "$WARI_LAUNCHER" || true
-            chmod 755 "$WARI_LAUNCHER" || true
+        if [[ "$restore_failed" -eq 0 ]]; then
+            case "$staging" in
+                "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
+            esac
+        else
+            printf 'Error: dependency update rollback failed; recovery files remain in %s\n' \
+                "$staging" >&2
         fi
-        case "$staging" in
-            "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
-        esac
         exit "$status"
     }
-    trap cleanup_update EXIT
+    trap cleanup_dependency_update EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
 
-    fetch_wari_update "$staging" || return 1
+    cp "$WARI_LAUNCHER" "$staging/wari" || return 1
+    chmod 755 "$staging/wari"
+    generate_update_lock "$staging/wari" "$staging/wari.lock" \
+        "$frankenphp_request" "$composer_request" "$linux_build_request" || return 1
     validate_launcher_pair "$staging/wari" "$staging/wari.lock" || return 1
-    candidate_version="$LOCK_WARI_VERSION"
-    printf 'Wari update: %s -> %s\n' "$current_version" "$candidate_version"
+    candidate_wari_version="$LOCK_WARI_VERSION"
+    candidate_wari_sha="$LOCK_WARI_SHA256"
+    candidate_frankenphp="$LOCK_FRANKENPHP_VERSION"
+    candidate_composer="$LOCK_COMPOSER_VERSION"
+    candidate_linux_build="$LOCK_LINUX_BUILD"
+    [[ "$candidate_wari_version" == "$current_wari_version" &&
+        "$candidate_wari_sha" == "$current_wari_sha" ]] || {
+        die 'dependency update attempted to change the Wari launcher identity'
+        return 1
+    }
+    printf '%s\n' \
+        "FrankenPHP: $current_frankenphp -> $candidate_frankenphp" \
+        "Composer:   $current_composer -> $candidate_composer" \
+        "Linux build: $current_linux_build -> $candidate_linux_build"
 
+    if cmp -s "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock"; then
+        rm -rf -- "$staging"
+        trap - EXIT INT TERM HUP
+        printf 'Wari dependency lock is already current.\n'
+        return 0
+    fi
     if [[ "$assume_yes" -ne 1 ]]; then
-        if confirm_setup; then
-            :
-        else
+        if confirm_tracked_change 'Update this project wari.lock?'; then :; else
             confirm_status=$?
             if [[ "$confirm_status" -eq 1 ]]; then
                 printf 'Wari update cancelled.\n'
@@ -761,20 +1162,148 @@ update_main() (
         fi
     fi
 
-    cp "$WARI_LAUNCHER" "$staging/wari.old"
-    cp "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock.old"
-    mv -- "$staging/wari" "$WARI_LAUNCHER" || return 1
-    chmod 755 "$WARI_LAUNCHER"
-    launcher_published=1
-    mv -- "$staging/wari.lock" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    cp "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock.old" || return 1
+    trap '' INT TERM HUP
+    if ! mv -- "$staging/wari.lock" "$WARI_PROJECT_ROOT/wari.lock"; then
+        trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+        return 1
+    fi
     lock_published=1
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    rm -rf -- "$staging"
+    lock_published=0
+    trap - EXIT INT TERM HUP
+    printf '%s\n' '' 'Review wari.lock, then run:' '  ./wari setup'
+)
+
+fetch_tagged_wari_launcher() {
+    local staging="$1"
+    local version="$2"
+    local url
+
+    validate_semver "$version" || return 1
+    url="https://raw.githubusercontent.com/wednesdaymoonlab/wari/v$version/wari"
+    download_file "$url" "$staging/wari" "Wari $version launcher" || return 1
+    chmod 755 "$staging/wari"
+}
+
+generate_self_update_lock() {
+    local launcher="$1"
+    local output="$2"
+    local frankenphp_version="$3"
+    local composer_version="$4"
+    local linux_build="$5"
+
+    bash "$launcher" --generate-lock "$output" \
+        --frankenphp "$frankenphp_version" \
+        --composer "$composer_version" \
+        --linux-build "$linux_build"
+}
+
+self_update_main() (
+    local target_version="${1-}"
+    local assume_yes=0
+    local current_version current_frankenphp current_composer current_linux_build
+    local candidate_version staging confirm_status
+    local launcher_published=0 lock_published=0 restore_failed=0
+
+    if [[ "$target_version" == --help || "$target_version" == -h ]]; then
+        printf '%s\n' 'Usage: ./wari self-update VERSION [--yes]'
+        return 0
+    fi
+    [[ -n "$target_version" ]] || {
+        die 'Usage: ./wari self-update VERSION [--yes]'
+        return 2
+    }
+    shift
+    validate_semver "$target_version" || return 2
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            --yes) assume_yes=1; shift ;;
+            *) die "unknown self-update option: $1"; return 2 ;;
+        esac
+    done
+
+    WARI_PROJECT_ROOT="${WARI_PROJECT_ROOT:-$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)}"
+    WARI_LAUNCHER="${WARI_LAUNCHER:-$WARI_PROJECT_ROOT/wari}"
+    validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
+    current_version="$LOCK_WARI_VERSION"
+    current_frankenphp="$LOCK_FRANKENPHP_VERSION"
+    current_composer="$LOCK_COMPOSER_VERSION"
+    current_linux_build="$LOCK_LINUX_BUILD"
+
+    staging="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-update.XXXXXX")" || return $?
+    cleanup_self_update() {
+        local status=$?
+        if [[ "$lock_published" -eq 1 && -f "$staging/wari.lock.old" ]]; then
+            cp "$staging/wari.lock.old" "$WARI_PROJECT_ROOT/wari.lock" || restore_failed=1
+        fi
+        if [[ "$launcher_published" -eq 1 && -f "$staging/wari.old" ]]; then
+            cp "$staging/wari.old" "$WARI_LAUNCHER" || restore_failed=1
+            chmod 755 "$WARI_LAUNCHER" || restore_failed=1
+        fi
+        if [[ "$restore_failed" -eq 0 ]]; then
+            case "$staging" in
+                "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
+            esac
+        else
+            printf 'Error: self-update rollback failed; recovery files remain in %s\n' \
+                "$staging" >&2
+        fi
+        exit "$status"
+    }
+    trap cleanup_self_update EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+
+    fetch_tagged_wari_launcher "$staging" "$target_version" || return 1
+    candidate_version="$(bash "$staging/wari" --version-value)" || return 1
+    [[ "$candidate_version" == "$target_version" ]] || {
+        die 'downloaded Wari launcher version does not match the requested tag'
+        return 1
+    }
+    generate_self_update_lock "$staging/wari" "$staging/wari.lock" \
+        "$current_frankenphp" "$current_composer" "$current_linux_build" || return 1
+    validate_launcher_pair "$staging/wari" "$staging/wari.lock" || return 1
+    printf 'Wari self-update: %s -> %s\n' "$current_version" "$candidate_version"
+
+    if [[ "$assume_yes" -ne 1 ]]; then
+        if confirm_tracked_change 'Update this project Wari launcher and lock?'; then :; else
+            confirm_status=$?
+            if [[ "$confirm_status" -eq 1 ]]; then
+                printf 'Wari self-update cancelled.\n'
+                return 0
+            fi
+            return 1
+        fi
+    fi
+
+    cp "$WARI_LAUNCHER" "$staging/wari.old" || return 1
+    cp "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock.old" || return 1
+    trap '' INT TERM HUP
+    if ! mv -- "$staging/wari" "$WARI_LAUNCHER"; then
+        trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+        return 1
+    fi
+    launcher_published=1
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    chmod 755 "$WARI_LAUNCHER" || return 1
+    trap '' INT TERM HUP
+    if ! mv -- "$staging/wari.lock" "$WARI_PROJECT_ROOT/wari.lock"; then
+        trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+        return 1
+    fi
+    lock_published=1
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
 
     rm -rf -- "$staging"
     launcher_published=0
     lock_published=0
     trap - EXIT INT TERM HUP
-    printf '%s\n' '' 'Review the tracked changes, then run:' '  ./wari setup'
+    printf '%s\n' '' 'Review wari and wari.lock, then run:' '  ./wari setup'
 )
 
 generate_wrappers() {
@@ -1364,7 +1893,8 @@ launcher_usage() {
         '' \
         'Commands:' \
         '  setup           Install or refresh the local runtime' \
-        '  update          Update the tracked launcher and lock' \
+        '  update          Update locked FrankenPHP and Composer dependencies' \
+        '  self-update VERSION  Update Wari from an exact Git tag' \
         '  php              Run project-local PHP' \
         '  composer         Run project-local Composer' \
         '  create-project   Create a Composer project in this directory' \
@@ -1561,6 +2091,11 @@ launcher_main() {
         validate_launcher_pair "$WARI_PROJECT_ROOT/wari" "$2"
         return
     fi
+    if [[ "${1-}" == '--generate-lock' ]]; then
+        shift
+        generate_lock_main "$@"
+        return
+    fi
     validate_launcher_pair "$WARI_PROJECT_ROOT/wari" \
         "$WARI_PROJECT_ROOT/wari.lock" || return 1
 
@@ -1574,6 +2109,10 @@ launcher_main() {
         update)
             shift
             update_main "$@"
+            ;;
+        self-update)
+            shift
+            self_update_main "$@"
             ;;
         php|composer|create-project|serve|frankenphp)
             local command_name="$1"

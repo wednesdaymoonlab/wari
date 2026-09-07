@@ -11,12 +11,20 @@ TEST_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 CORE_DIR="$(dirname -- "$TEST_DIR")"
 LIVE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/wari-live-test.XXXXXX")"
 SERVER_PID=''
-LIVE_LOCK="$CORE_DIR/wari.lock"
 
 cleanup_live_test() {
     local status=$?
+    local stop_attempt=0
     if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
         kill "$SERVER_PID" >/dev/null 2>&1 || true
+        while kill -0 "$SERVER_PID" >/dev/null 2>&1 && \
+            ((stop_attempt < 20)); do
+            sleep 0.1
+            stop_attempt=$((stop_attempt + 1))
+        done
+        if kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+            kill -KILL "$SERVER_PID" >/dev/null 2>&1 || true
+        fi
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
     case "$LIVE_ROOT" in
@@ -34,15 +42,8 @@ case "${WARI_LINUX_BUILD:-static}" in
     *) printf 'Invalid WARI_LINUX_BUILD: %s\n' "$WARI_LINUX_BUILD" >&2; exit 2 ;;
 esac
 
-if [[ "$(uname -s)" == 'Linux' && "${WARI_LINUX_BUILD:-static}" == 'gnu' ]]; then
-    LOCK_WARI_VERSION="$(awk -F= '$1 == "wari_version" { print $2 }' "$CORE_DIR/wari.lock")"
-    LOCK_FRANKENPHP_VERSION="$(awk -F= '$1 == "frankenphp_version" { print $2 }' "$CORE_DIR/wari.lock")"
-    LOCK_COMPOSER_VERSION="$(awk -F= '$1 == "composer_version" { print $2 }' "$CORE_DIR/wari.lock")"
-    LIVE_LOCK="$LIVE_ROOT/wari-gnu.lock"
-    "$CORE_DIR/tools/generate-lock.sh" \
-        "$LOCK_WARI_VERSION" "$LOCK_FRANKENPHP_VERSION" \
-        "$LOCK_COMPOSER_VERSION" gnu >"$LIVE_LOCK"
-fi
+LOCK_FRANKENPHP_VERSION="$(awk -F= '$1 == "frankenphp_version" { print $2 }' "$CORE_DIR/wari.lock")"
+LOCK_COMPOSER_VERSION="$(awk -F= '$1 == "composer_version" { print $2 }' "$CORE_DIR/wari.lock")"
 
 if curl --silent --output /dev/null --max-time 1 'http://127.0.0.1:8000/' 2>/dev/null; then
     printf 'Port 8000 is already occupied; live test cannot safely run.\n' >&2
@@ -56,14 +57,25 @@ printf '%s\n' '<?php echo "wari-live-ok";' >"$PROJECT/public/index.php"
 
 (
     cd "$PROJECT"
-    # shellcheck source=../install.sh
-    source ./install.sh
-    fetch_tracked_files() {
-        cp "$CORE_DIR/wari" "$1/wari"
-        cp "$LIVE_LOCK" "$1/wari.lock"
-        chmod 755 "$1/wari"
-    }
-    initializer_main --yes
+    bash ./install.sh --yes \
+        --local-source "$CORE_DIR" \
+        --frankenphp "$LOCK_FRANKENPHP_VERSION" \
+        --composer "$LOCK_COMPOSER_VERSION" \
+        --linux-build "${WARI_LINUX_BUILD:-static}"
+    if [[ -e .wari ]]; then
+        printf 'Initializer created runtime state before explicit setup.\n' >&2
+        exit 1
+    fi
+    ./wari --validate-pair wari.lock
+    set +e
+    before_setup_output="$(./wari composer --version 2>&1)"
+    before_setup_status=$?
+    set -e
+    if [[ "$before_setup_status" -eq 0 ||
+        "$before_setup_output" != *'./wari setup'* ]]; then
+        printf 'Runtime command before setup did not explain explicit setup.\n' >&2
+        exit 1
+    fi
     ./wari setup --yes
     ./wari setup --yes
 )

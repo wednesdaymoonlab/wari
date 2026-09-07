@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-WARI_VERSION='0.2.0'
+WARI_VERSION='0.2.1'
 WARI_LEGACY_DISPATCHER_SHA256='e79b82db037f7ee0a0907b27c2a893a53b7677a1ace25a1e6e953ff5aedbac43'
 
 die() { printf 'Error: %s\n' "$1" >&2; return 1; }
 can_show_download_progress() { [[ -t 2 ]]; }
 
+validate_initializer_semver() {
+    [[ "${1-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+        die "invalid semantic version: ${1-}"
+        return 1
+    }
+}
+
 curl_to_file() {
     local url="$1" destination="$2" progress_label="$3"
     shift 3
-    local attempt=1 max_attempts=4 status
+    local attempt=1 max_attempts=4 status effective_url
     local -a output_options
     while ((attempt <= max_attempts)); do
         if [[ -n "$progress_label" ]] && can_show_download_progress; then
@@ -18,9 +25,15 @@ curl_to_file() {
         else
             output_options=(--silent)
         fi
-        if curl --fail --show-error "${output_options[@]}" --location \
-            --connect-timeout 15 "$@" "$url" -o "$destination"; then
-            return 0
+        if effective_url="$(curl --fail --show-error "${output_options[@]}" \
+            --location --proto '=https' --proto-redir '=https' \
+            --write-out '%{url_effective}' --connect-timeout 15 \
+            "$@" "$url" -o "$destination")"; then
+            if validate_initializer_effective_url "$url" "$effective_url"; then
+                return 0
+            fi
+            rm -f -- "$destination"
+            return 1
         else
             status=$?
         fi
@@ -35,10 +48,26 @@ curl_to_file() {
     done
 }
 
+validate_initializer_effective_url() {
+    local initial_url="$1"
+    local effective_url="$2"
+
+    case "$initial_url" in
+        https://raw.githubusercontent.com/wednesdaymoonlab/wari/*)
+            [[ "$effective_url" == "$initial_url" ]]
+            ;;
+        *) return 1 ;;
+    esac || {
+        die "download redirected to an unsupported URL: $effective_url"
+        return 1
+    }
+}
+
 download_file() {
     local url="$1" destination="$2" progress_label="${3-}"
     case "$url" in
-        https://api.github.com/*|https://github.com/*) ;;
+        https://api.github.com/*|https://github.com/*|\
+        https://raw.githubusercontent.com/wednesdaymoonlab/wari/*) ;;
         *) die "refusing download from unsupported URL: $url"; return 1 ;;
     esac
     curl_to_file "$url" "$destination" "$progress_label"
@@ -107,86 +136,70 @@ ensure_gitignore_block() {
     mv -- "$temporary" "$gitignore"
 }
 
-read_wari_release_asset() {
-    local json_file="$1" asset_name="$2" record digest url
-    record="$(awk -v target="$asset_name" '
-        function string_value(line, value) {
-            value = line; sub(/^[^:]*:[[:space:]]*"/, "", value)
-            sub(/"[,]*[[:space:]]*$/, "", value); return value
-        }
-        /^[[:space:]]*"name":[[:space:]]*"/ {
-            value = string_value($0)
-            if (value == target) { matches++; active = 1 } else { active = 0 }
-            next
-        }
-        active && /^[[:space:]]*"digest":[[:space:]]*"/ {
-            digest = string_value($0); next
-        }
-        active && /^[[:space:]]*"browser_download_url":[[:space:]]*"/ {
-            url = string_value($0); active = 0
-        }
-        END {
-            if (matches != 1 || digest == "" || url == "") exit 2
-            printf "%s\t%s\n", digest, url
-        }
-    ' "$json_file")" || return 1
-    IFS=$'\t' read -r digest url <<<"$record"
-    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-    printf '%s\t%s\n' "${digest#sha256:}" "$url"
+fetch_tagged_launcher() {
+    local staging="$1"
+    local version="$2"
+    local url
+
+    validate_initializer_semver "$version" || return 1
+    url="https://raw.githubusercontent.com/wednesdaymoonlab/wari/v$version/wari"
+    download_file "$url" "$staging/wari" "Wari $version launcher" || return 1
+    chmod 755 "$staging/wari"
 }
 
-parse_wari_release() {
-    local json_file="$1" header wari_record lock_record
-    local release_draft release_prerelease
-    header="$(awk '
-        function string_value(line, value) {
-            value = line; sub(/^[^:]*:[[:space:]]*"/, "", value)
-            sub(/"[,]*[[:space:]]*$/, "", value); return value
-        }
-        function scalar_value(line, value) {
-            value = line; sub(/^[^:]*:[[:space:]]*/, "", value)
-            sub(/[,]*[[:space:]]*$/, "", value); return value
-        }
-        /^[[:space:]]*"tag_name":/ { tags++; tag = string_value($0) }
-        /^[[:space:]]*"draft":/ { drafts++; draft = scalar_value($0) }
-        /^[[:space:]]*"prerelease":/ { pres++; pre = scalar_value($0) }
-        END {
-            if (tags != 1 || drafts != 1 || pres != 1) exit 2
-            printf "%s\t%s\t%s\n", tag, draft, pre
-        }
-    ' "$json_file")" || { die 'invalid Wari release metadata'; return 1; }
-    IFS=$'\t' read -r WARI_RELEASE_TAG release_draft release_prerelease <<<"$header"
-    [[ "$WARI_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ &&
-        "$release_draft" == false && "$release_prerelease" == false ]] || {
-        die 'Wari release must be a stable semantic version'; return 1;
+copy_local_launcher() {
+    local staging="$1"
+    local source_directory="$2"
+    local physical_source
+
+    [[ -d "$source_directory" && ! -L "$source_directory" ]] || {
+        die "invalid local Wari source directory: $source_directory"
+        return 1
     }
-    wari_record="$(read_wari_release_asset "$json_file" wari)" || return 1
-    lock_record="$(read_wari_release_asset "$json_file" wari.lock)" || return 1
-    IFS=$'\t' read -r WARI_ASSET_SHA256 WARI_ASSET_URL <<<"$wari_record"
-    IFS=$'\t' read -r WARI_LOCK_ASSET_SHA256 WARI_LOCK_ASSET_URL <<<"$lock_record"
-    [[ "$WARI_ASSET_URL" == \
-        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari" &&
-        "$WARI_LOCK_ASSET_URL" == \
-        "https://github.com/wednesdaymoonlab/wari/releases/download/$WARI_RELEASE_TAG/wari.lock" ]] || {
-        die 'Wari release asset URL is not official'; return 1;
+    physical_source="$(CDPATH= cd -- "$source_directory" && pwd -P)" || return 1
+    [[ -f "$physical_source/wari" && ! -L "$physical_source/wari" ]] || {
+        die "local Wari source has no regular launcher: $physical_source/wari"
+        return 1
     }
+    cp "$physical_source/wari" "$staging/wari" || return 1
+    chmod 755 "$staging/wari"
+}
+
+generate_staged_lock() {
+    local staging="$1"
+    local frankenphp_request="$2"
+    local composer_request="$3"
+    local linux_build="$4"
+    local -a generator_args
+
+    generator_args=(--generate-lock "$staging/wari.lock" --linux-build "$linux_build")
+    [[ -z "$frankenphp_request" ]] || generator_args+=(--frankenphp "$frankenphp_request")
+    [[ -z "$composer_request" ]] || generator_args+=(--composer "$composer_request")
+    bash "$staging/wari" "${generator_args[@]}"
 }
 
 fetch_tracked_files() {
-    local staging="$1" release_json="$1/wari-release.json"
-    download_file \
-        "https://api.github.com/repos/wednesdaymoonlab/wari/releases/tags/v$WARI_VERSION" \
-        "$release_json" || return 1
-    parse_wari_release "$release_json" || return 1
-    [[ "$WARI_RELEASE_TAG" == "v$WARI_VERSION" ]] || {
-        die 'Wari release tag does not match this initializer'; return 1;
-    }
-    download_file "$WARI_ASSET_URL" "$staging/wari" 'Wari launcher' || return 1
-    verify_checksum sha256 "$WARI_ASSET_SHA256" "$staging/wari" || return 1
-    download_file "$WARI_LOCK_ASSET_URL" "$staging/wari.lock" 'Wari lock' || return 1
-    verify_checksum sha256 "$WARI_LOCK_ASSET_SHA256" "$staging/wari.lock" || return 1
-    rm -f -- "$release_json"
-    chmod 755 "$staging/wari"
+    local staging="$1"
+    local selected_wari_version="$2"
+    local local_source="$3"
+    local frankenphp_request="$4"
+    local composer_request="$5"
+    local linux_build="$6"
+    local staged_version
+
+    if [[ -n "$local_source" ]]; then
+        copy_local_launcher "$staging" "$local_source" || return 1
+    else
+        fetch_tagged_launcher "$staging" "$selected_wari_version" || return 1
+    fi
+    staged_version="$(bash "$staging/wari" --version-value)" || return 1
+    validate_initializer_semver "$staged_version" || return 1
+    if [[ -z "$local_source" && "$staged_version" != "$selected_wari_version" ]]; then
+        die 'downloaded Wari launcher version does not match the requested tag'
+        return 1
+    fi
+    generate_staged_lock "$staging" "$frankenphp_request" \
+        "$composer_request" "$linux_build"
 }
 
 is_recognized_legacy_layout() {
@@ -219,19 +232,66 @@ confirm_initializer() {
 initializer_main() (
     local assume_yes=0 migrate=0 project_root staging confirm_status
     local published_wari=0 published_lock=0 legacy_backup=''
+    local selected_wari_version="$WARI_VERSION"
+    local frankenphp_request='' composer_request='' linux_build='static'
+    local local_source=''
+    local seen_wari=0 seen_frankenphp=0 seen_composer=0 seen_linux_build=0
+    local seen_local_source=0
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
-            --yes) assume_yes=1 ;;
-            --migrate) migrate=1 ;;
+            --yes) assume_yes=1; shift ;;
+            --migrate) migrate=1; shift ;;
+            --wari)
+                [[ "$seen_wari" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --wari option'; return 2;
+                }
+                seen_wari=1; selected_wari_version="$2"; shift 2
+                ;;
+            --frankenphp)
+                [[ "$seen_frankenphp" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --frankenphp option'; return 2;
+                }
+                seen_frankenphp=1; frankenphp_request="$2"; shift 2
+                ;;
+            --composer)
+                [[ "$seen_composer" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --composer option'; return 2;
+                }
+                seen_composer=1; composer_request="$2"; shift 2
+                ;;
+            --linux-build)
+                [[ "$seen_linux_build" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --linux-build option'; return 2;
+                }
+                seen_linux_build=1; linux_build="$2"; shift 2
+                ;;
+            --local-source)
+                [[ "$seen_local_source" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --local-source option'; return 2;
+                }
+                seen_local_source=1; local_source="$2"; shift 2
+                ;;
             --help|-h)
-                printf '%s\n' 'Usage: install.sh [--yes] [--migrate]' '' \
+                printf '%s\n' \
+                    'Usage: install.sh [--yes] [--migrate] [--wari VERSION]' \
+                    '       [--frankenphp VERSION] [--composer VERSION]' \
+                    '       [--linux-build static|gnu] [--local-source DIRECTORY]' '' \
                     'Add the tracked Wari launcher and lock to the current project.' \
+                    'The lock is generated from official upstream metadata.' \
                     'Use --migrate only for a recognized generated Wari 0.1 layout.'
                 return 0 ;;
             *) die "unknown initializer option: $1"; return 2 ;;
         esac
-        shift
     done
+    [[ "$seen_wari" -eq 0 || "$seen_local_source" -eq 0 ]] || {
+        die '--wari and --local-source cannot be used together'; return 2;
+    }
+    validate_initializer_semver "$selected_wari_version" || return 2
+    [[ -z "$frankenphp_request" ]] || validate_initializer_semver "$frankenphp_request" || return 2
+    [[ -z "$composer_request" ]] || validate_initializer_semver "$composer_request" || return 2
+    [[ "$linux_build" == static || "$linux_build" == gnu ]] || {
+        die "invalid Linux build: $linux_build"; return 2;
+    }
     project_root="$(pwd -P)"
     if [[ "$migrate" -eq 1 ]]; then
         is_recognized_legacy_layout "$project_root" || {
@@ -266,7 +326,8 @@ initializer_main() (
     trap cleanup_initializer EXIT
     trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
 
-    fetch_tracked_files "$staging" || return 1
+    fetch_tracked_files "$staging" "$selected_wari_version" "$local_source" \
+        "$frankenphp_request" "$composer_request" "$linux_build" || return 1
     [[ -f "$staging/wari" && ! -L "$staging/wari" && -x "$staging/wari" ]] || {
         die 'downloaded Wari launcher is invalid'; return 1;
     }
@@ -281,8 +342,20 @@ initializer_main() (
         ln "$project_root/wari" "$legacy_backup" || return 1
         rm -f -- "$project_root/wari" || return 1
     fi
-    mv -- "$staging/wari" "$project_root/wari" || return 1; published_wari=1
-    mv -- "$staging/wari.lock" "$project_root/wari.lock" || return 1; published_lock=1
+    trap '' INT TERM HUP
+    if ! mv -- "$staging/wari" "$project_root/wari"; then
+        trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+        return 1
+    fi
+    published_wari=1
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    trap '' INT TERM HUP
+    if ! mv -- "$staging/wari.lock" "$project_root/wari.lock"; then
+        trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+        return 1
+    fi
+    published_lock=1
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     ensure_gitignore_block "$project_root" || return 1
     [[ -z "$legacy_backup" ]] || rm -f -- "$legacy_backup"
     rmdir -- "$staging"

@@ -75,7 +75,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
-      - name: Install and test real runtime
+      - name: Generate local-source lock and test real runtime
         shell: bash
         env:
           WARI_RUN_LIVE: '1'

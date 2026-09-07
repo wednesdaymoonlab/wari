@@ -1,5 +1,11 @@
 # Wari Project-Local Team Runtime Design
 
+> **Superseded in part:** The initialization and tracked-file update model is
+> replaced by
+> [Wari Generated Lock and Git Tag Distribution Design](2026-09-07-wari-generated-lock-tag-distribution-design.md).
+> The runtime, explicit setup, platform, manifest, and rollback guarantees in
+> this document remain active.
+
 **Date:** 2026-09-07
 
 ## Purpose
@@ -154,7 +160,7 @@ format uses the following conceptual fields:
 
 ```text
 lock_version=1
-wari_version=0.2.0
+wari_version=0.2.1
 frankenphp_version=1.12.7
 composer_version=2.8.11
 linux_build=static

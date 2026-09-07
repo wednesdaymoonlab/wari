@@ -109,7 +109,7 @@ if declare -F write_manifest >/dev/null 2>&1 &&
     MANIFEST_STAGING="$SETUP_TMP/manifest"
     mkdir -p "$MANIFEST_STAGING/runtime"
     LOCK_SHA256="$(printf '%064d' 6)"
-    LOCK_WARI_VERSION='0.2.0'
+    LOCK_WARI_VERSION='0.2.1'
     LOCK_FRANKENPHP_VERSION='1.12.7'
     LOCK_COMPOSER_VERSION='2.8.11'
     LOCK_LINUX_BUILD='static'
