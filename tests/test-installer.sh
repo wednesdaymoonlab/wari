@@ -5,7 +5,7 @@ CORE_DIR="$(dirname -- "$TEST_DIR")"
 source "$TEST_DIR/test-helper.sh"
 source "$CORE_DIR/install.sh"
 
-assert_eq '0.2.1' "$WARI_VERSION" 'thin initializer reports its release version'
+assert_eq '0.3.0' "$WARI_VERSION" 'thin initializer reports its release version'
 PIPE_HELP_OUTPUT="$(bash -s -- --help <"$CORE_DIR/install.sh")"
 assert_contains "$PIPE_HELP_OUTPUT" 'Add the tracked Wari launcher and lock' \
     'pipe mode runs the project initializer'

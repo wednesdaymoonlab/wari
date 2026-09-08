@@ -39,7 +39,9 @@ printf '%s\n' 'Wari runtime layout 2' >"$WARI/.wari-owned"
     printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\nxdg_config_home=%s\nxdg_data_home=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" "${XDG_CONFIG_HOME-}" "${XDG_DATA_HOME-}" >>"$FAKE_CAPTURE"'
     printf '%s\n' 'case "${1-}/${2-}/${3-}" in'
     printf '%s\n' '  php-cli/*php-proxy.php/version) printf '\''PHP 8.4.0 (cli)\n'\''; exit 0 ;;'
-    printf '%s\n' '  php-cli/*composer.phar/--version) printf '\''Composer version 2.8.11 2025-01-01\n'\''; exit 0 ;;'
+    printf '%s\n' '  php-cli/*composer.phar/--version)'
+    printf '%s\n' '    printf '\''%s\n'\'' '\''PHP version 8.5.10 (/fixture/runtime/composer.phar)'\'' '\''Run the "diagnose" command to get more detailed diagnostics output.'\'' '\''Composer warning remains visible.'\'' >&2'
+    printf '%s\n' '    printf '\''Composer version 2.8.11 2025-01-01\n'\''; exit 0 ;;'
     printf '%s\n' '  version//) printf '\''FrankenPHP v1.12.7\n'\''; exit 0 ;;'
     printf '%s\n' 'esac'
     printf '%s\n' 'exit "${FAKE_EXIT_CODE:-0}"'
@@ -51,6 +53,10 @@ generate_wrappers "$WARI"
 cp "$CORE_DIR/wari" "$DISPATCHER"
 cp "$CORE_DIR/wari.lock" "$PROJECT/wari.lock"
 chmod 755 "$DISPATCHER"
+DISPATCHER_SHA="$(calculate_checksum sha256 "$DISPATCHER")"
+sed "s/^wari_sha256=.*/wari_sha256=$DISPATCHER_SHA/" \
+    "$PROJECT/wari.lock" >"$PROJECT/wari.lock.next"
+mv -- "$PROJECT/wari.lock.next" "$PROJECT/wari.lock"
 
 case "$(uname -s)" in
     Linux) TEST_OS='linux' ;;
@@ -70,7 +76,7 @@ cat >"$WARI/manifest.json" <<EOF
 {
   "layout_version": 2,
   "lock_sha256": "$LOCK_SHA",
-  "wari_version": "0.2.1",
+  "wari_version": "0.3.0",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",
@@ -162,19 +168,79 @@ assert_contains "$COMPOSER_CAPTURE" "php_binary=$WARI/php" 'Composer exports PHP
 assert_contains "$COMPOSER_CAPTURE" "path=$WARI:" 'Composer prepends Wari to PATH'
 assert_contains "$COMPOSER_CAPTURE" 'wari_composer_context=1' 'Composer marks its process tree for PHP compatibility'
 
+FAKE_CAPTURE="$CAPTURE" "$WARI/composer" --version \
+    >"$WRAPPER_TMP/composer-version.stdout" \
+    2>"$WRAPPER_TMP/composer-version.stderr"
+assert_contains "$(<"$WRAPPER_TMP/composer-version.stdout")" \
+    'Composer version 2.8.11' \
+    'Composer version command preserves its primary output'
+if [[ "$(<"$WRAPPER_TMP/composer-version.stderr")" == *'PHP version 8.5.10'* || \
+    "$(<"$WRAPPER_TMP/composer-version.stderr")" == *'Run the "diagnose" command'* ]]; then
+    WRAPPER_HAS_COMPOSER_FOOTER=1
+else
+    WRAPPER_HAS_COMPOSER_FOOTER=0
+fi
+assert_eq '0' "$WRAPPER_HAS_COMPOSER_FOOTER" \
+    'Composer version wrapper hides the informational version footer'
+assert_contains "$(<"$WRAPPER_TMP/composer-version.stderr")" \
+    'Composer warning remains visible.' \
+    'Composer version wrapper preserves unrelated diagnostics'
+
 assert_fails 'serve rejects a project without public directory' env FAKE_CAPTURE="$CAPTURE" "$WARI/serve"
 mkdir -p "$PROJECT/public"
-FAKE_CAPTURE="$CAPTURE" "$WARI/serve"
+(
+    unset HOME XDG_CONFIG_HOME XDG_DATA_HOME
+    FAKE_CAPTURE="$CAPTURE" "$WARI/serve"
+)
 SERVE_CAPTURE="$(<"$CAPTURE")"
 assert_contains "$SERVE_CAPTURE" 'arg0=<php-server>' 'serve selects php-server'
 assert_contains "$SERVE_CAPTURE" 'arg1=<--listen>' 'serve supplies listen option'
 assert_contains "$SERVE_CAPTURE" 'arg2=<127.0.0.1:8000>' 'serve binds to loopback port 8000'
 assert_contains "$SERVE_CAPTURE" "arg4=<$PROJECT/public>" 'serve supplies absolute public root'
+assert_contains "$SERVE_CAPTURE" "xdg_config_home=$WARI/runtime/xdg/config" \
+    'serve supplies local XDG config without HOME'
+assert_contains "$SERVE_CAPTURE" "xdg_data_home=$WARI/runtime/xdg/data" \
+    'serve supplies local XDG data without HOME'
 
 FAKE_CAPTURE="$CAPTURE" "$WARI/frankenphp" run --config 'My Caddyfile'
 RAW_CAPTURE="$(<"$CAPTURE")"
 assert_contains "$RAW_CAPTURE" 'arg0=<run>' 'raw wrapper forwards command'
 assert_contains "$RAW_CAPTURE" 'arg2=<My Caddyfile>' 'raw wrapper preserves config path'
+
+(
+    unset HOME XDG_CONFIG_HOME XDG_DATA_HOME
+    FAKE_CAPTURE="$CAPTURE" "$WARI/frankenphp" version
+)
+RAW_NO_HOME_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$RAW_NO_HOME_CAPTURE" "xdg_config_home=$WARI/runtime/xdg/config" \
+    'FrankenPHP wrapper supplies local XDG config without HOME'
+assert_contains "$RAW_NO_HOME_CAPTURE" "xdg_data_home=$WARI/runtime/xdg/data" \
+    'FrankenPHP wrapper supplies local XDG data without HOME'
+
+(
+    unset HOME
+    XDG_CONFIG_HOME='/srv/wari state/config' \
+    XDG_DATA_HOME='/srv/wari state/data' \
+    FAKE_CAPTURE="$CAPTURE" "$WARI/frankenphp" version
+)
+RAW_EXPLICIT_XDG_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$RAW_EXPLICIT_XDG_CAPTURE" \
+    'xdg_config_home=/srv/wari state/config' \
+    'FrankenPHP wrapper preserves explicit XDG config'
+assert_contains "$RAW_EXPLICIT_XDG_CAPTURE" \
+    'xdg_data_home=/srv/wari state/data' \
+    'FrankenPHP wrapper preserves explicit XDG data'
+
+(
+    HOME='/srv/service-home' \
+    XDG_CONFIG_HOME= XDG_DATA_HOME= \
+    FAKE_CAPTURE="$CAPTURE" "$WARI/frankenphp" version
+)
+RAW_HOME_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$RAW_HOME_CAPTURE" 'xdg_config_home=' \
+    'FrankenPHP wrapper does not invent XDG config when HOME is available'
+assert_contains "$RAW_HOME_CAPTURE" 'xdg_data_home=' \
+    'FrankenPHP wrapper does not invent XDG data when HOME is available'
 
 set +e
 FAKE_CAPTURE="$CAPTURE" FAKE_EXIT_CODE=17 "$WARI/php" script.php >/dev/null 2>&1
@@ -233,7 +299,7 @@ assert_eq 'not-invoked' "$(<"$CAPTURE")" 'dispatcher does not invoke runtime for
 ORPHAN_PROJECT="$WRAPPER_TMP/orphan"
 mkdir -p "$ORPHAN_PROJECT"
 cp "$DISPATCHER" "$ORPHAN_PROJECT/wari"
-cp "$CORE_DIR/wari.lock" "$ORPHAN_PROJECT/wari.lock"
+cp "$PROJECT/wari.lock" "$ORPHAN_PROJECT/wari.lock"
 set +e
 MISSING_OUTPUT="$("$ORPHAN_PROJECT/wari" php --version 2>&1)"
 MISSING_STATUS=$?

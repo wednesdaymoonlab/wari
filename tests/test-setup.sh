@@ -56,6 +56,10 @@ if [[ "${1-}" == 'php-cli' && "${2-}" == *composer-setup.php ]]; then
     exit 0
 fi
 if [[ "${1-}" == 'php-cli' && "${2-}" == *composer.phar && "${3-}" == '--version' ]]; then
+    printf '%s\n' \
+        'PHP version 8.5.10 (/fixture/runtime/composer.phar)' \
+        'Run the "diagnose" command to get more detailed diagnostics output.' \
+        'Composer warning remains visible.' >&2
     printf 'Composer version 2.8.11 2025-01-01\n'
     exit 0
 fi
@@ -86,8 +90,23 @@ FAKE_FRANKENPHP
     [[ "$(<"$CAPTURE")" == *"--install-dir=$STAGING/runtime"* ]] || return 6
 )
 
-assert_eq '0' "$(test_locked_artifact_install; printf '%s' "$?")" \
+set +e
+test_locked_artifact_install 2>"$SETUP_TMP/composer-version.stderr"
+LOCKED_ARTIFACT_STATUS=$?
+set -e
+assert_eq '0' "$LOCKED_ARTIFACT_STATUS" \
     'installs exact locked FrankenPHP and Composer artifacts'
+if [[ "$(<"$SETUP_TMP/composer-version.stderr")" == *'PHP version 8.5.10'* || \
+    "$(<"$SETUP_TMP/composer-version.stderr")" == *'Run the "diagnose" command'* ]]; then
+    INSTALL_HAS_COMPOSER_FOOTER=1
+else
+    INSTALL_HAS_COMPOSER_FOOTER=0
+fi
+assert_eq '0' "$INSTALL_HAS_COMPOSER_FOOTER" \
+    'Composer post-install probe hides the informational version footer'
+assert_contains "$(<"$SETUP_TMP/composer-version.stderr")" \
+    'Composer warning remains visible.' \
+    'Composer post-install probe preserves unrelated diagnostics'
 
 test_bad_composer_installer() (
     STAGING="$SETUP_TMP/bad-installer"

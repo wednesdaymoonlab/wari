@@ -18,6 +18,12 @@ The results below were recorded on 2026-09-07 with:
 Linux is supported by Wari, but this framework matrix has not yet been repeated
 on Linux.
 
+Wari's service generator has separate deterministic coverage for systemd and
+Supervisor output across the supported CI platform matrix. That verifies
+configuration generation and escaping, not a framework's long-lived-worker
+safety or a live service-manager lifecycle. The table below retains the
+historical application checks until those production lifecycle tests are run.
+
 ## Matrix
 
 | Project | Type | Tested version | Install | CLI | Web | Database | Worker mode | Status |

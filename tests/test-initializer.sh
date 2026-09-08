@@ -10,7 +10,7 @@ source "$TEST_DIR/test-helper.sh"
 # shellcheck source=../install.sh
 source "$CORE_DIR/install.sh"
 
-assert_eq '0.2.1' "$WARI_VERSION" \
+assert_eq '0.3.0' "$WARI_VERSION" \
     'initializer version matches the tracked launcher release'
 
 PIPE_HELP_OUTPUT="$(bash -s -- --help <"$CORE_DIR/install.sh")"
@@ -22,11 +22,11 @@ assert_contains "$PIPE_HELP_OUTPUT" '--frankenphp VERSION' \
     'initializer documents exact dependency overrides'
 assert_fails 'initializer rejects a launcher redirect to an unrelated host' \
     validate_initializer_effective_url \
-    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.2.1/wari' \
+    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.3.0/wari' \
     'https://example.test/wari'
 assert_eq '0' "$(validate_initializer_effective_url \
-    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.2.1/wari' \
-    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.2.1/wari' \
+    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.3.0/wari' \
+    'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.3.0/wari' \
     >/dev/null 2>&1; printf '%s' "$?")" \
     'initializer accepts launcher downloads on the exact raw GitHub URL'
 assert_fails 'initializer rejects --wari without a value' initializer_main --wari
@@ -53,9 +53,9 @@ if declare -F fetch_tagged_launcher >/dev/null 2>&1; then
         INITIALIZER_DOWNLOADED_URL="$1"
         cp "$CORE_DIR/wari" "$2"
     }
-    fetch_tagged_launcher "$TAG_STAGING" '0.2.1'
+    fetch_tagged_launcher "$TAG_STAGING" '0.3.0'
     assert_eq \
-        'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.2.1/wari' \
+        'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.3.0/wari' \
         "$INITIALIZER_DOWNLOADED_URL" \
         'initializer downloads the launcher from the exact Wari tag'
 else
@@ -135,7 +135,7 @@ assert_eq '0' "$LOCAL_STATUS" \
 assert_eq '0' "$(test ! -e "$LOCAL_PROJECT/.wari"; printf '%s' "$?")" \
     'local-source initialization leaves runtime setup explicit'
 if [[ "$LOCAL_STATUS" -eq 0 ]]; then
-    assert_eq 'Wari 0.2.1' "$("$LOCAL_PROJECT/wari" --version)" \
+    assert_eq 'Wari 0.3.0' "$("$LOCAL_PROJECT/wari" --version)" \
         'local-source initialization publishes the working launcher'
     bash "$LOCAL_PROJECT/wari" --validate-pair "$LOCAL_PROJECT/wari.lock"
     assert_eq '0' "$?" 'local-source initialization publishes a valid pair'

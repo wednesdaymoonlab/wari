@@ -43,11 +43,12 @@ jobs:
           bash tests/test-update.sh
           bash tests/test-initializer.sh
           bash tests/test-installer.sh
-      - name: Run offline wrapper tests
+      - name: Run offline wrapper and service tests
         shell: bash
         run: |
           bash tests/test-wrappers.sh
           bash tests/test-create-project.sh
+          bash tests/test-service.sh
 
   live:
     name: Live (${{ matrix.name }})

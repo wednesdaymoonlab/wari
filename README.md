@@ -72,10 +72,11 @@ CI uses the same lock and must not run `./wari update`:
 ./wari composer install --no-interaction
 ```
 
-If `./wari php`, `./wari composer`, `./wari serve`, `./wari frankenphp`, or
-`./wari create-project` is run before setup—or after the lock/platform changes—
-Wari exits with a message telling the user to run `./wari setup`. It never
-downloads or repairs the runtime as a side effect of another command.
+If `./wari php`, `./wari composer`, `./wari serve`, `./wari frankenphp`,
+`./wari create-project`, or `./wari service` is run before setup—or after the
+lock/platform changes—Wari exits with a message telling the user to run
+`./wari setup`. It never downloads or repairs the runtime as a side effect of
+another command.
 
 ### Create a new Composer project
 
@@ -122,6 +123,7 @@ still reporting download errors and retries.
 ./wari composer require vendor/package
 ./wari serve
 ./wari frankenphp version
+./wari service --help
 ```
 
 `./wari` is the public command dispatcher. The downloaded runtime, Composer,
@@ -197,6 +199,29 @@ data project-local under `.wari/runtime/xdg/` in that case. Caddy on macOS may
 still print a harmless `$HOME is not defined` configuration-directory warning;
 Wari does not invent or overwrite a home directory.
 
+## Production services
+
+Wari can generate a complete systemd unit on Linux or a Supervisor program on
+Linux and macOS. It prints configuration to standard output and review/install
+instructions to standard error; it never installs a service or invokes `sudo`.
+
+For a broadly compatible front-controller application:
+
+```bash
+./wari service generate systemd \
+  --profile=classic --user=www-data >my-app.service
+```
+
+For Supervisor, replace `systemd` with `supervisor` and redirect to a `.conf`
+file. Laravel applications deliberately configured for long-lived workers can
+choose `--profile=octane`; projects that own their routing can choose
+`--profile=caddyfile --config=Caddyfile`. Generated application listeners are
+loopback-only and are intended to sit behind an independently configured Nginx,
+Apache, Caddy, or other reverse proxy.
+
+See the [production guide](docs/production/README.md) for profile selection,
+installation, logging, reload/restart, update, and removal procedures.
+
 ## Supported platforms
 
 | Operating system | Architecture | Build |
@@ -271,7 +296,7 @@ bash ../../core/install.sh --local-source ../../core
 ```
 
 Publishing a Wari version requires pushing the tested source commit and then a
-matching immutable tag such as `v0.2.1`. A GitHub Release is optional; the
+matching immutable tag such as `v0.3.0`. A GitHub Release is optional; the
 initializer does not consume Release assets.
 
 Run offline tests:
@@ -285,6 +310,7 @@ bash tests/test-update.sh
 bash tests/test-initializer.sh
 bash tests/test-wrappers.sh
 bash tests/test-create-project.sh
+bash tests/test-service.sh
 ```
 
 Run the opt-in test that downloads real artifacts and starts a loopback server:

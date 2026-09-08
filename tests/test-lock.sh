@@ -330,7 +330,7 @@ FAKE_CURL
     set +e
     PATH="$FAKE_BIN:$PATH" WARI_GENERATOR_RETRY_MARKER="$RETRY_MARKER" \
         WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
-        bash "$GENERATOR" 0.2.1 1.12.7 2.8.11 static >"$GENERATED_LOCK"
+        bash "$GENERATOR" 0.3.0 1.12.7 2.8.11 static >"$GENERATED_LOCK"
     GENERATOR_STATUS=$?
     set -e
     assert_eq '0' "$GENERATOR_STATUS" \

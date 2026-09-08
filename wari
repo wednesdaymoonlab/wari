@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-WARI_VERSION='0.2.1'
+WARI_VERSION='0.3.0'
 WARI_RUNTIME_OWNER='Wari runtime layout 2'
 
 die() {
@@ -716,6 +716,23 @@ install_locked_frankenphp() {
     chmod 755 "$runtime_dir/frankenphp"
 }
 
+filter_composer_version_stderr() {
+    sed \
+        -e '/^PHP version [0-9][^ ]* (.*composer\.phar)$/d' \
+        -e '/^Run the "diagnose" command to get more detailed diagnostics output\.$/d' \
+        >&2
+}
+
+run_composer_version() {
+    local status
+
+    {
+        "$@" 2>&1 1>&3 | filter_composer_version_stderr
+        status="${PIPESTATUS[0]}"
+    } 3>&1
+    return "$status"
+}
+
 install_locked_composer() {
     local staging="$1"
     local runtime_dir="$staging/runtime"
@@ -739,7 +756,7 @@ install_locked_composer() {
     fi
     verify_checksum sha256 "$LOCK_COMPOSER_SHA256" \
         "$runtime_dir/composer.phar" || return 1
-    output="$("$runtime_dir/frankenphp" php-cli \
+    output="$(run_composer_version "$runtime_dir/frankenphp" php-cli \
         "$runtime_dir/composer.phar" --version)" || return 1
     if [[ "$output" != "Composer version $LOCK_COMPOSER_VERSION"* ]]; then
         die "installed Composer version does not match wari.lock: $output"
@@ -1436,20 +1453,7 @@ case "${filtered_arguments[0]-}" in
             exit 2
         fi
 
-        if [[ -z "${HOME:-}" ]]; then
-            if [[ -z "${XDG_CONFIG_HOME:-}" ]]; then
-                XDG_CONFIG_HOME="$WARI_DIR/runtime/xdg/config"
-                export XDG_CONFIG_HOME
-                mkdir -p -- "$XDG_CONFIG_HOME"
-            fi
-            if [[ -z "${XDG_DATA_HOME:-}" ]]; then
-                XDG_DATA_HOME="$WARI_DIR/runtime/xdg/data"
-                export XDG_DATA_HOME
-                mkdir -p -- "$XDG_DATA_HOME"
-            fi
-        fi
-
-        exec "$WARI_DIR/runtime/frankenphp" php-server \
+        exec "$WARI_DIR/frankenphp" php-server \
             --listen "$listen_address" \
             --root "$document_root"
         ;;
@@ -1483,6 +1487,23 @@ WARI_PHP
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+filter_composer_version_stderr() {
+    sed \
+        -e '/^PHP version [0-9][^ ]* (.*composer\.phar)$/d' \
+        -e '/^Run the "diagnose" command to get more detailed diagnostics output\.$/d' \
+        >&2
+}
+
+run_composer_version() {
+    local status
+
+    {
+        "$@" 2>&1 1>&3 | filter_composer_version_stderr
+        status="${PIPESTATUS[0]}"
+    } 3>&1
+    return "$status"
+}
+
 WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
 cd -- "$PROJECT_ROOT"
@@ -1490,6 +1511,17 @@ cd -- "$PROJECT_ROOT"
 export PHP_BINARY="$WARI_DIR/php"
 export PATH="$WARI_DIR:$PATH"
 export WARI_COMPOSER_CONTEXT=1
+
+for argument in "$@"; do
+    case "$argument" in
+        --version|-V)
+            run_composer_version "$WARI_DIR/php" \
+                "$WARI_DIR/runtime/composer.phar" "$@"
+            exit $?
+            ;;
+    esac
+done
+
 exec "$WARI_DIR/php" "$WARI_DIR/runtime/composer.phar" "$@"
 WARI_COMPOSER
 
@@ -1863,7 +1895,7 @@ if [[ ! -d "$PROJECT_ROOT/public" ]]; then
     exit 1
 fi
 
-exec "$WARI_DIR/runtime/frankenphp" php-server \
+exec "$WARI_DIR/frankenphp" php-server \
     --listen 127.0.0.1:8000 \
     --root "$PROJECT_ROOT/public"
 WARI_SERVE
@@ -1876,6 +1908,19 @@ WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_ROOT="$(dirname -- "$WARI_DIR")"
 cd -- "$PROJECT_ROOT"
 
+if [[ -z "${HOME:-}" ]]; then
+    if [[ -z "${XDG_CONFIG_HOME:-}" ]]; then
+        XDG_CONFIG_HOME="$WARI_DIR/runtime/xdg/config"
+        export XDG_CONFIG_HOME
+        mkdir -p -- "$XDG_CONFIG_HOME"
+    fi
+    if [[ -z "${XDG_DATA_HOME:-}" ]]; then
+        XDG_DATA_HOME="$WARI_DIR/runtime/xdg/data"
+        export XDG_DATA_HOME
+        mkdir -p -- "$XDG_DATA_HOME"
+    fi
+fi
+
 exec "$WARI_DIR/runtime/frankenphp" "$@"
 WARI_FRANKENPHP
 
@@ -1885,6 +1930,769 @@ WARI_FRANKENPHP
         "$wari_dir/create-project" \
         "$wari_dir/serve" \
         "$wari_dir/frankenphp"
+}
+
+service_usage_error() {
+    die "$1" || true
+    return 2
+}
+
+service_usage() {
+    printf '%s\n' \
+        'Usage: ./wari service generate <systemd|supervisor> [options]' \
+        '' \
+        'Required options:' \
+        '  --profile=<classic|octane|caddyfile>' \
+        '  --user=<os-user>' \
+        '' \
+        'Common options:' \
+        '  --name=<name>' \
+        '  --state-dir=<absolute-path>' \
+        '  --stop-timeout=<seconds>' \
+        '' \
+        'Classic options: --root, --host, --port' \
+        'Octane options: --host, --port, --workers, --max-requests' \
+        'Caddyfile options: --config'
+}
+
+reset_service_state() {
+    SERVICE_MANAGER=''
+    SERVICE_PROFILE=''
+    SERVICE_USER=''
+    SERVICE_NAME=''
+    SERVICE_STATE_DIR=''
+    SERVICE_STOP_TIMEOUT=''
+    SERVICE_ROOT=''
+    SERVICE_HOST=''
+    SERVICE_PORT=''
+    SERVICE_WORKERS=''
+    SERVICE_MAX_REQUESTS=''
+    SERVICE_CONFIG=''
+    SERVICE_PROJECT_ROOT=''
+    SERVICE_XDG_CONFIG_HOME=''
+    SERVICE_XDG_DATA_HOME=''
+    SERVICE_LOG_FILE=''
+    SERVICE_START_ARGUMENTS=()
+    SERVICE_RELOAD_ARGUMENTS=()
+}
+
+parse_service_generate_options() {
+    local argument=''
+    local option=''
+    local value=''
+    local seen_profile=0
+    local seen_user=0
+    local seen_name=0
+    local seen_state_dir=0
+    local seen_stop_timeout=0
+    local seen_root=0
+    local seen_host=0
+    local seen_port=0
+    local seen_workers=0
+    local seen_max_requests=0
+    local seen_config=0
+
+    reset_service_state
+    [[ "$#" -gt 0 ]] || {
+        service_usage_error 'service generate requires systemd or supervisor'
+        return 2
+    }
+    SERVICE_MANAGER="$1"
+    shift
+    case "$SERVICE_MANAGER" in
+        systemd|supervisor) ;;
+        *) service_usage_error "unsupported service manager: $SERVICE_MANAGER"; return 2 ;;
+    esac
+
+    while [[ "$#" -gt 0 ]]; do
+        argument="$1"
+        option=''
+        value=''
+        case "$argument" in
+            --profile=*|--user=*|--name=*|--state-dir=*|--stop-timeout=*|\
+            --root=*|--host=*|--port=*|--workers=*|--max-requests=*|--config=*)
+                option="${argument%%=*}"
+                option="${option#--}"
+                value="${argument#*=}"
+                shift
+                ;;
+            --profile|--user|--name|--state-dir|--stop-timeout|\
+            --root|--host|--port|--workers|--max-requests|--config)
+                option="${argument#--}"
+                [[ "$#" -ge 2 ]] || {
+                    service_usage_error "service option requires a value: $argument"
+                    return 2
+                }
+                value="$2"
+                shift 2
+                ;;
+            --*) service_usage_error "unknown service option: $argument"; return 2 ;;
+            *) service_usage_error "unexpected service argument: $argument"; return 2 ;;
+        esac
+        [[ -n "$value" ]] || {
+            service_usage_error "service option requires a non-empty value: --$option"
+            return 2
+        }
+
+        case "$option" in
+            profile)
+                [[ "$seen_profile" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --profile'; return 2;
+                }
+                SERVICE_PROFILE="$value"; seen_profile=1
+                ;;
+            user)
+                [[ "$seen_user" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --user'; return 2;
+                }
+                SERVICE_USER="$value"; seen_user=1
+                ;;
+            name)
+                [[ "$seen_name" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --name'; return 2;
+                }
+                SERVICE_NAME="$value"; seen_name=1
+                ;;
+            state-dir)
+                [[ "$seen_state_dir" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --state-dir'; return 2;
+                }
+                SERVICE_STATE_DIR="$value"; seen_state_dir=1
+                ;;
+            stop-timeout)
+                [[ "$seen_stop_timeout" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --stop-timeout'; return 2;
+                }
+                SERVICE_STOP_TIMEOUT="$value"; seen_stop_timeout=1
+                ;;
+            root)
+                [[ "$seen_root" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --root'; return 2;
+                }
+                SERVICE_ROOT="$value"; seen_root=1
+                ;;
+            host)
+                [[ "$seen_host" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --host'; return 2;
+                }
+                SERVICE_HOST="$value"; seen_host=1
+                ;;
+            port)
+                [[ "$seen_port" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --port'; return 2;
+                }
+                SERVICE_PORT="$value"; seen_port=1
+                ;;
+            workers)
+                [[ "$seen_workers" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --workers'; return 2;
+                }
+                SERVICE_WORKERS="$value"; seen_workers=1
+                ;;
+            max-requests)
+                [[ "$seen_max_requests" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --max-requests'; return 2;
+                }
+                SERVICE_MAX_REQUESTS="$value"; seen_max_requests=1
+                ;;
+            config)
+                [[ "$seen_config" -eq 0 ]] || {
+                    service_usage_error 'duplicate service option: --config'; return 2;
+                }
+                SERVICE_CONFIG="$value"; seen_config=1
+                ;;
+        esac
+    done
+
+    [[ -n "$SERVICE_PROFILE" ]] || {
+        service_usage_error 'service generate requires --profile'; return 2;
+    }
+    case "$SERVICE_PROFILE" in
+        classic|octane|caddyfile) ;;
+        *) service_usage_error "unsupported service profile: $SERVICE_PROFILE"; return 2 ;;
+    esac
+    [[ -n "$SERVICE_USER" ]] || {
+        service_usage_error 'service generate requires --user'; return 2;
+    }
+
+    case "$SERVICE_PROFILE" in
+        classic)
+            [[ -n "$SERVICE_ROOT" ]] || SERVICE_ROOT='public'
+            [[ -n "$SERVICE_HOST" ]] || SERVICE_HOST='127.0.0.1'
+            [[ -n "$SERVICE_PORT" ]] || SERVICE_PORT='8000'
+            [[ -n "$SERVICE_STOP_TIMEOUT" ]] || SERVICE_STOP_TIMEOUT='60'
+            ;;
+        octane)
+            [[ -n "$SERVICE_HOST" ]] || SERVICE_HOST='127.0.0.1'
+            [[ -n "$SERVICE_PORT" ]] || SERVICE_PORT='8000'
+            [[ -n "$SERVICE_STOP_TIMEOUT" ]] || SERVICE_STOP_TIMEOUT='3600'
+            ;;
+        caddyfile)
+            [[ -n "$SERVICE_CONFIG" ]] || SERVICE_CONFIG='Caddyfile'
+            [[ -n "$SERVICE_STOP_TIMEOUT" ]] || SERVICE_STOP_TIMEOUT='60'
+            ;;
+    esac
+}
+
+validate_service_safe_value() {
+    local value="$1"
+    local label="${2:-value}"
+    case "$value" in
+        *$'\n'*|*$'\r'*)
+            service_usage_error "$label contains a control character"
+            return 2
+            ;;
+    esac
+    if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+        service_usage_error "$label contains a control character"
+        return 2
+    fi
+}
+
+validate_service_name() {
+    local name="$1"
+    validate_service_safe_value "$name" 'service name' || return 2
+    [[ "$name" =~ ^[a-z0-9][a-z0-9_.-]{0,127}$ ]] || {
+        service_usage_error "invalid service name: $name"
+        return 2
+    }
+}
+
+derive_service_name() {
+    local basename_value=''
+    [[ -n "$SERVICE_NAME" ]] && return 0
+    basename_value="${WARI_PROJECT_ROOT##*/}"
+    SERVICE_NAME="$(printf '%s' "$basename_value" | tr '[:upper:]' '[:lower:]' |
+        sed -e 's/[^a-z0-9_.-][^a-z0-9_.-]*/-/g' \
+            -e 's/^[._-]*//' -e 's/[._-]*$//')"
+    [[ -n "$SERVICE_NAME" ]] || {
+        service_usage_error 'project directory does not produce a usable service name'
+        return 2
+    }
+    validate_service_name "$SERVICE_NAME"
+}
+
+validate_service_user() {
+    local user="$1"
+    local uid=''
+    [[ -n "$user" && "$user" != -* ]] || {
+        service_usage_error "invalid service user: $user"; return 2;
+    }
+    validate_service_safe_value "$user" 'service user' || return 2
+    case "$user" in
+        *[[:space:]]*) service_usage_error "invalid service user: $user"; return 2 ;;
+    esac
+    uid="$(id -u "$user" 2>/dev/null)" || {
+        service_usage_error "service user does not exist: $user"
+        return 2
+    }
+    [[ "$uid" != 0 ]] || {
+        service_usage_error 'service user must not be root'
+        return 2
+    }
+}
+
+validate_service_state_dir() {
+    local state_dir="$1"
+    validate_service_safe_value "$state_dir" 'service state directory' || return 2
+    [[ "$state_dir" == /* ]] || {
+        service_usage_error 'service state directory must be absolute'; return 2;
+    }
+    case "$state_dir/" in
+        */./*|*/../*)
+            service_usage_error 'service state directory must not contain . or .. components'
+            return 2
+            ;;
+    esac
+}
+
+validate_service_bounded_integer() {
+    local value="$1"
+    local minimum="$2"
+    local maximum="$3"
+    local label="$4"
+    local decimal=''
+    [[ "$value" =~ ^[0-9]+$ && "${#value}" -le 10 ]] || {
+        service_usage_error "$label must be an integer"
+        return 2
+    }
+    decimal=$((10#$value))
+    ((decimal >= minimum && decimal <= maximum)) || {
+        service_usage_error "$label is outside the supported range"
+        return 2
+    }
+}
+
+validate_service_port() {
+    validate_service_bounded_integer "$1" 1 65535 'service port'
+}
+
+validate_service_stop_timeout() {
+    validate_service_bounded_integer "$1" 1 86400 'service stop timeout'
+}
+
+validate_service_positive_integer() {
+    validate_service_bounded_integer "$1" 1 2147483647 "${2:-value}"
+}
+
+validate_service_host() {
+    case "$1" in
+        127.0.0.1|::1) return 0 ;;
+        *) service_usage_error "service host must be loopback: $1"; return 2 ;;
+    esac
+}
+
+detect_service_platform() {
+    if [[ -n "${WARI_TEST_PLATFORM_OS:-}" ]]; then
+        PLATFORM_OS="$WARI_TEST_PLATFORM_OS"
+        return 0
+    fi
+    detect_current_platform
+}
+
+resolve_macos_user_home() {
+    local user="$1"
+    local output=''
+    local home=''
+    if command -v dscl >/dev/null 2>&1; then
+        output="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null)" || output=''
+        case "$output" in
+            'NFSHomeDirectory: '*) home="${output#NFSHomeDirectory: }" ;;
+        esac
+    fi
+    if [[ -z "$home" && "$user" == "$(id -un 2>/dev/null)" ]]; then
+        home="${HOME:-}"
+    fi
+    [[ "$home" == /* ]] || {
+        service_usage_error "cannot resolve a home for $user; pass --state-dir"
+        return 2
+    }
+    validate_service_safe_value "$home" 'service user home' || return 2
+    printf '%s\n' "$home"
+}
+
+finalize_service_state_paths() {
+    local user_home=''
+    if [[ -z "$SERVICE_STATE_DIR" ]]; then
+        case "$PLATFORM_OS" in
+            linux) SERVICE_STATE_DIR="/var/lib/wari/$SERVICE_NAME" ;;
+            darwin)
+                user_home="$(resolve_macos_user_home "$SERVICE_USER")" || return 2
+                SERVICE_STATE_DIR="$user_home/Library/Application Support/Wari/$SERVICE_NAME"
+                ;;
+            *) service_usage_error "unsupported service platform: $PLATFORM_OS"; return 2 ;;
+        esac
+    fi
+    validate_service_state_dir "$SERVICE_STATE_DIR" || return 2
+    SERVICE_XDG_CONFIG_HOME="$SERVICE_STATE_DIR/config"
+    SERVICE_XDG_DATA_HOME="$SERVICE_STATE_DIR/data"
+    SERVICE_LOG_FILE="$SERVICE_STATE_DIR/service.log"
+}
+
+validate_service_common_options() {
+    detect_service_platform || return 2
+    [[ "$SERVICE_MANAGER" != systemd || "$PLATFORM_OS" == linux ]] || {
+        service_usage_error 'systemd service generation is supported only on Linux'
+        return 2
+    }
+    validate_service_user "$SERVICE_USER" || return 2
+    derive_service_name || return 2
+    validate_service_stop_timeout "$SERVICE_STOP_TIMEOUT" || return 2
+    finalize_service_state_paths
+}
+
+resolve_service_directory() {
+    local requested="$1"
+    local label="$2"
+    local candidate=''
+    if [[ "$requested" == /* ]]; then
+        candidate="$requested"
+    else
+        candidate="$WARI_PROJECT_ROOT/$requested"
+    fi
+    [[ -d "$candidate" && ! -L "$candidate" ]] || {
+        die "$label directory does not exist: $candidate" || true
+        return 1
+    }
+    (CDPATH= cd -- "$candidate" && pwd -P)
+}
+
+resolve_service_file() {
+    local requested="$1"
+    local label="$2"
+    local candidate=''
+    local parent=''
+    local basename_value=''
+    local physical_parent=''
+    if [[ "$requested" == /* ]]; then
+        candidate="$requested"
+    else
+        candidate="$WARI_PROJECT_ROOT/$requested"
+    fi
+    [[ -f "$candidate" && ! -L "$candidate" ]] || {
+        die "$label file does not exist: $candidate" || true
+        return 1
+    }
+    parent="${candidate%/*}"
+    basename_value="${candidate##*/}"
+    physical_parent="$(CDPATH= cd -- "$parent" && pwd -P)" || return 1
+    printf '%s/%s\n' "$physical_parent" "$basename_value"
+}
+
+build_classic_service_profile() {
+    local document_root=''
+    [[ -z "$SERVICE_CONFIG" && -z "$SERVICE_WORKERS" && \
+        -z "$SERVICE_MAX_REQUESTS" ]] || {
+        service_usage_error 'classic profile accepts only --root, --host, and --port'
+        return 2
+    }
+    validate_service_host "$SERVICE_HOST" || return 2
+    validate_service_port "$SERVICE_PORT" || return 2
+    validate_service_stop_timeout "$SERVICE_STOP_TIMEOUT" || return 2
+    document_root="$(resolve_service_directory "$SERVICE_ROOT" 'classic document root')" || return 1
+    [[ -f "$document_root/index.php" && ! -L "$document_root/index.php" ]] || {
+        die "classic document root has no regular index.php: $document_root" || true
+        return 1
+    }
+    SERVICE_ROOT="$document_root"
+    SERVICE_START_ARGUMENTS=(
+        "$WARI_PROJECT_ROOT/wari" frankenphp php-server
+        --listen "$SERVICE_HOST:$SERVICE_PORT"
+        --root "$SERVICE_ROOT"
+    )
+    SERVICE_RELOAD_ARGUMENTS=()
+}
+
+build_octane_service_profile() {
+    local required=''
+    [[ -z "$SERVICE_ROOT" && -z "$SERVICE_CONFIG" ]] || {
+        service_usage_error 'octane profile does not accept --root or --config'
+        return 2
+    }
+    validate_service_host "$SERVICE_HOST" || return 2
+    validate_service_port "$SERVICE_PORT" || return 2
+    validate_service_stop_timeout "$SERVICE_STOP_TIMEOUT" || return 2
+    [[ -z "$SERVICE_WORKERS" ]] || \
+        validate_service_positive_integer "$SERVICE_WORKERS" 'Octane workers' || return 2
+    [[ -z "$SERVICE_MAX_REQUESTS" ]] || \
+        validate_service_positive_integer "$SERVICE_MAX_REQUESTS" 'Octane max requests' || return 2
+
+    for required in artisan vendor/autoload.php composer.json \
+        vendor/laravel/octane/composer.json public/frankenphp-worker.php; do
+        [[ -f "$WARI_PROJECT_ROOT/$required" && ! -L "$WARI_PROJECT_ROOT/$required" ]] || {
+            die "Octane prerequisite is missing or invalid: $WARI_PROJECT_ROOT/$required" || true
+            return 1
+        }
+    done
+
+    SERVICE_START_ARGUMENTS=(
+        "$WARI_PROJECT_ROOT/wari" php artisan octane:start
+        --server=frankenphp
+        "--host=$SERVICE_HOST"
+        "--port=$SERVICE_PORT"
+    )
+    [[ -z "$SERVICE_WORKERS" ]] || \
+        SERVICE_START_ARGUMENTS+=("--workers=$SERVICE_WORKERS")
+    [[ -z "$SERVICE_MAX_REQUESTS" ]] || \
+        SERVICE_START_ARGUMENTS+=("--max-requests=$SERVICE_MAX_REQUESTS")
+    SERVICE_RELOAD_ARGUMENTS=(
+        "$WARI_PROJECT_ROOT/wari" php artisan octane:reload
+    )
+}
+
+build_caddyfile_service_profile() {
+    local config=''
+    local validation_output=''
+    [[ -z "$SERVICE_ROOT" && -z "$SERVICE_HOST" && -z "$SERVICE_PORT" && \
+        -z "$SERVICE_WORKERS" && -z "$SERVICE_MAX_REQUESTS" ]] || {
+        service_usage_error 'caddyfile profile accepts only --config'
+        return 2
+    }
+    validate_service_stop_timeout "$SERVICE_STOP_TIMEOUT" || return 2
+    config="$(resolve_service_file "$SERVICE_CONFIG" 'Caddy')" || return 1
+    if ! validation_output="$("$WARI_RUNTIME_DIR/frankenphp" \
+        validate --config "$config" 2>&1)"; then
+        [[ -z "$validation_output" ]] || printf '%s\n' "$validation_output" >&2
+        die "FrankenPHP rejected Caddy configuration: $config" || true
+        return 1
+    fi
+    SERVICE_CONFIG="$config"
+    SERVICE_START_ARGUMENTS=(
+        "$WARI_PROJECT_ROOT/wari" frankenphp run --config "$SERVICE_CONFIG"
+    )
+    SERVICE_RELOAD_ARGUMENTS=(
+        "$WARI_PROJECT_ROOT/wari" frankenphp reload --config "$SERVICE_CONFIG"
+    )
+}
+
+build_service_profile() {
+    SERVICE_START_ARGUMENTS=()
+    SERVICE_RELOAD_ARGUMENTS=()
+    case "$SERVICE_PROFILE" in
+        classic) build_classic_service_profile ;;
+        octane) build_octane_service_profile ;;
+        caddyfile) build_caddyfile_service_profile ;;
+        *) service_usage_error "unsupported service profile: $SERVICE_PROFILE"; return 2 ;;
+    esac
+}
+
+escape_systemd_value() {
+    local value="$1"
+    validate_service_safe_value "$value" 'systemd value' || return 2
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//%/%%}"
+    printf '%s' "$value"
+}
+
+render_systemd_command() {
+    local argument=''
+    local escaped=''
+    local separator=''
+    for argument in "$@"; do
+        escaped="$(escape_systemd_value "$argument")" || return 2
+        printf '%s"%s"' "$separator" "$escaped"
+        separator=' '
+    done
+}
+
+escape_supervisor_value() {
+    local value="$1"
+    validate_service_safe_value "$value" 'Supervisor value' || return 2
+    value="${value//%/%%}"
+    printf '%s' "$value"
+}
+
+escape_supervisor_quoted_value() {
+    local value=''
+    value="$(escape_supervisor_value "$1")" || return 2
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s' "$value"
+}
+
+render_supervisor_command() {
+    local argument=''
+    local escaped=''
+    local separator=''
+    for argument in "$@"; do
+        escaped="$(escape_supervisor_quoted_value "$argument")" || return 2
+        printf '%s"%s"' "$separator" "$escaped"
+        separator=' '
+    done
+}
+
+render_instruction_argument() {
+    local value="$1"
+    validate_service_safe_value "$value" 'instruction value' || return 2
+    if [[ "$value" =~ ^[a-zA-Z0-9_./:=@%+-]+$ ]]; then
+        printf '%s' "$value"
+    else
+        value="${value//\'/\'\\\'\'}"
+        printf "'%s'" "$value"
+    fi
+}
+
+render_instruction_command() {
+    local argument=''
+    local separator=''
+    for argument in "$@"; do
+        printf '%s' "$separator"
+        render_instruction_argument "$argument" || return 2
+        separator=' '
+    done
+}
+
+render_systemd_service() {
+    local working_directory=''
+    local xdg_config=''
+    local xdg_data=''
+    local start_command=''
+    local reload_command=''
+    working_directory="$(escape_systemd_value "$WARI_PROJECT_ROOT")" || return 2
+    xdg_config="$(escape_systemd_value "$SERVICE_XDG_CONFIG_HOME")" || return 2
+    xdg_data="$(escape_systemd_value "$SERVICE_XDG_DATA_HOME")" || return 2
+    start_command="$(render_systemd_command "${SERVICE_START_ARGUMENTS[@]}")" || return 2
+    if [[ "${#SERVICE_RELOAD_ARGUMENTS[@]}" -gt 0 ]]; then
+        reload_command="$(render_systemd_command "${SERVICE_RELOAD_ARGUMENTS[@]}")" || return 2
+    fi
+
+    printf '%s\n' \
+        "# Generated by Wari $WARI_VERSION" \
+        '# Manager: systemd' \
+        "# Profile: $SERVICE_PROFILE" \
+        '' \
+        '[Unit]' \
+        "Description=Wari PHP service ($SERVICE_NAME)" \
+        'After=network-online.target' \
+        'Wants=network-online.target' \
+        '' \
+        '[Service]' \
+        'Type=simple' \
+        "User=$SERVICE_USER" \
+        "WorkingDirectory=\"$working_directory\""
+    if [[ "$SERVICE_STATE_DIR" == "/var/lib/wari/$SERVICE_NAME" ]]; then
+        printf '%s\n' \
+            "StateDirectory=wari/$SERVICE_NAME" \
+            'StateDirectoryMode=0750'
+    fi
+    printf '%s\n' \
+        "Environment=\"XDG_CONFIG_HOME=$xdg_config\"" \
+        "Environment=\"XDG_DATA_HOME=$xdg_data\"" \
+        "ExecStart=$start_command"
+    [[ -z "$reload_command" ]] || printf 'ExecReload=%s\n' "$reload_command"
+    printf '%s\n' \
+        'Restart=always' \
+        'RestartSec=5' \
+        'KillSignal=SIGTERM' \
+        'KillMode=control-group' \
+        "TimeoutStopSec=$SERVICE_STOP_TIMEOUT" \
+        'StandardOutput=journal' \
+        'StandardError=journal' \
+        '' \
+        '[Install]' \
+        'WantedBy=multi-user.target'
+}
+
+print_systemd_instructions() {
+    local reload_line=''
+    if [[ "${#SERVICE_RELOAD_ARGUMENTS[@]}" -gt 0 ]]; then
+        reload_line="sudo systemctl reload $SERVICE_NAME.service"
+    fi
+    printf '%s\n' \
+        '=== Wari installation guide ===' \
+        'This section is not part of the generated configuration.' \
+        '' \
+        'Save and review the generated unit, then install it:' \
+        "  sudo install -m 0644 $SERVICE_NAME.service /etc/systemd/system/$SERVICE_NAME.service"
+    if [[ "$SERVICE_STATE_DIR" != "/var/lib/wari/$SERVICE_NAME" ]]; then
+        printf '  sudo install -d -m 0750 -o %s ' "$SERVICE_USER"
+        render_instruction_argument "$SERVICE_STATE_DIR"
+        printf '\n'
+    fi
+    printf '%s\n' \
+        '  sudo systemctl daemon-reload' \
+        "  sudo systemctl enable --now $SERVICE_NAME.service" \
+        "  sudo systemctl status $SERVICE_NAME.service" \
+        "  journalctl -u $SERVICE_NAME.service"
+    [[ -z "$reload_line" ]] || printf '  %s\n' "$reload_line"
+    printf '%s\n' \
+        "  sudo systemctl restart $SERVICE_NAME.service" \
+        "  sudo systemctl stop $SERVICE_NAME.service" \
+        "  sudo systemctl disable $SERVICE_NAME.service"
+}
+
+render_supervisor_service() {
+    local command=''
+    local directory=''
+    local xdg_config=''
+    local xdg_data=''
+    local log_file=''
+    command="$(render_supervisor_command "${SERVICE_START_ARGUMENTS[@]}")" || return 2
+    directory="$(escape_supervisor_value "$WARI_PROJECT_ROOT")" || return 2
+    xdg_config="$(escape_supervisor_quoted_value "$SERVICE_XDG_CONFIG_HOME")" || return 2
+    xdg_data="$(escape_supervisor_quoted_value "$SERVICE_XDG_DATA_HOME")" || return 2
+    log_file="$(escape_supervisor_value "$SERVICE_LOG_FILE")" || return 2
+    printf '%s\n' \
+        "# Generated by Wari $WARI_VERSION" \
+        '# Manager: supervisor' \
+        "# Profile: $SERVICE_PROFILE" \
+        '' \
+        "[program:$SERVICE_NAME]" \
+        'process_name=%(program_name)s' \
+        'numprocs=1' \
+        "command=$command" \
+        "directory=$directory" \
+        "user=$SERVICE_USER" \
+        "environment=XDG_CONFIG_HOME=\"$xdg_config\",XDG_DATA_HOME=\"$xdg_data\"" \
+        'autostart=true' \
+        'autorestart=true' \
+        'startsecs=3' \
+        'startretries=3' \
+        'stopsignal=TERM' \
+        'stopasgroup=true' \
+        'killasgroup=true' \
+        "stopwaitsecs=$SERVICE_STOP_TIMEOUT" \
+        'redirect_stderr=true' \
+        "stdout_logfile=$log_file" \
+        'stdout_logfile_maxbytes=10MB' \
+        'stdout_logfile_backups=5'
+}
+
+print_supervisor_instructions() {
+    printf '%s\n' \
+        '=== Wari installation guide ===' \
+        'This section is not part of the generated configuration.' \
+        '' \
+        'Create the writable service state:'
+    printf '  sudo install -d -m 0750 -o %s ' "$SERVICE_USER"
+    render_instruction_argument "$SERVICE_STATE_DIR" || return 2
+    printf '\n%s\n' \
+        'Install the generated program in a path matched by [include] files=.'
+    if [[ "$PLATFORM_OS" == linux ]]; then
+        printf '%s\n' \
+            "A common Linux path is /etc/supervisor/conf.d/$SERVICE_NAME.conf."
+    else
+        printf '%s\n' \
+            'On macOS, inspect the selected supervisord.conf; no include path is universal.'
+    fi
+    printf '%s\n' \
+        'Use the same absolute configuration path for every command:' \
+        '  sudo supervisorctl -c /absolute/path/supervisord.conf reread' \
+        '  sudo supervisorctl -c /absolute/path/supervisord.conf update' \
+        "  sudo supervisorctl -c /absolute/path/supervisord.conf status $SERVICE_NAME"
+    if [[ "${#SERVICE_RELOAD_ARGUMENTS[@]}" -gt 0 ]]; then
+        printf '  '
+        render_instruction_command "${SERVICE_RELOAD_ARGUMENTS[@]}" || return 2
+        printf '\n'
+    else
+        printf '  sudo supervisorctl -c /absolute/path/supervisord.conf restart %s\n' \
+            "$SERVICE_NAME"
+    fi
+    printf '%s\n' \
+        "  sudo supervisorctl -c /absolute/path/supervisord.conf stop $SERVICE_NAME" \
+        'Remove the included program file, then run reread and update again.'
+}
+
+render_service_configuration() {
+    case "$SERVICE_MANAGER" in
+        systemd) render_systemd_service ;;
+        supervisor) render_supervisor_service ;;
+        *) service_usage_error "unsupported service manager: $SERVICE_MANAGER"; return 2 ;;
+    esac
+}
+
+render_service_instructions() {
+    case "$SERVICE_MANAGER" in
+        systemd) print_systemd_instructions ;;
+        supervisor) print_supervisor_instructions ;;
+        *) service_usage_error "unsupported service manager: $SERVICE_MANAGER"; return 2 ;;
+    esac
+}
+
+service_main() {
+    local configuration=''
+    local instructions=''
+    case "${1-}" in
+        --help|-h)
+            service_usage
+            return 0
+            ;;
+        generate)
+            shift
+            parse_service_generate_options "$@" || return $?
+            SERVICE_PROJECT_ROOT="$(CDPATH= cd -- "$WARI_PROJECT_ROOT" && pwd -P)" || return 1
+            WARI_PROJECT_ROOT="$SERVICE_PROJECT_ROOT"
+            validate_service_common_options || return $?
+            build_service_profile || return $?
+            configuration="$(render_service_configuration)" || return $?
+            instructions="$(render_service_instructions)" || return $?
+            printf '%s\n' "$configuration"
+            printf '%s\n' "$instructions" >&2
+            ;;
+        '') service_usage_error 'service requires the generate subcommand'; return 2 ;;
+        *) service_usage_error "unknown service subcommand: $1"; return 2 ;;
+    esac
 }
 
 launcher_usage() {
@@ -1900,6 +2708,7 @@ launcher_usage() {
         '  create-project   Create a Composer project in this directory' \
         '  serve            Serve ./public at http://127.0.0.1:8000' \
         '  frankenphp       Run the bundled FrankenPHP binary' \
+        '  service          Generate production service configuration' \
         '  help             Show this help'
 }
 
@@ -2055,7 +2864,7 @@ validate_runtime() {
 
     output="$("$runtime_dir/php" --version)" || return 1
     [[ "$output" == "PHP $(manifest_string "$manifest" php_version)"* ]] || return 1
-    output="$("$runtime_dir/composer" --version)" || return 1
+    output="$(run_composer_version "$runtime_dir/composer" --version)" || return 1
     [[ "$output" == "Composer version $LOCK_COMPOSER_VERSION"* ]] || return 1
     output="$("$runtime_dir/frankenphp" version)" || return 1
     [[ "$output" == *"FrankenPHP v$LOCK_FRANKENPHP_VERSION"* ]] || return 1
@@ -2113,6 +2922,18 @@ launcher_main() {
         self-update)
             shift
             self_update_main "$@"
+            ;;
+        service)
+            shift
+            if [[ "${1-}" == '--help' || "${1-}" == '-h' ]]; then
+                service_main "$@"
+                return
+            fi
+            validate_runtime "$WARI_PROJECT_ROOT" || {
+                runtime_not_ready
+                return 1
+            }
+            service_main "$@"
             ;;
         php|composer|create-project|serve|frankenphp)
             local command_name="$1"

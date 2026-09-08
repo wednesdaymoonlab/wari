@@ -20,6 +20,24 @@ cp "$CORE_DIR/wari" "$PROJECT/wari"
 cp "$CORE_DIR/wari.lock" "$PROJECT/wari.lock"
 chmod 755 "$PROJECT/wari"
 
+if command -v sha256sum >/dev/null 2>&1; then
+    LAUNCHER_SHA="$(sha256sum "$PROJECT/wari")"
+else
+    LAUNCHER_SHA="$(shasum -a 256 "$PROJECT/wari")"
+fi
+LAUNCHER_SHA="${LAUNCHER_SHA%%[[:space:]]*}"
+sed "s/^wari_sha256=.*/wari_sha256=$LAUNCHER_SHA/" \
+    "$PROJECT/wari.lock" >"$LAUNCHER_TMP/fixture.lock"
+cp "$LAUNCHER_TMP/fixture.lock" "$PROJECT/wari.lock"
+
+copy_launcher_pair() {
+    local destination="$1"
+
+    cp "$CORE_DIR/wari" "$destination/wari"
+    cp "$LAUNCHER_TMP/fixture.lock" "$destination/wari.lock"
+    chmod 755 "$destination/wari"
+}
+
 cat >"$FAKE_BIN/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 : >"$WARI_NETWORK_MARKER"
@@ -35,9 +53,34 @@ assert_contains "$HELP_OUTPUT" 'Update locked FrankenPHP and Composer' \
     'help describes update as dependency-only'
 assert_contains "$HELP_OUTPUT" 'self-update VERSION' \
     'help lists exact launcher self-update separately'
+assert_contains "$HELP_OUTPUT" \
+    'service          Generate production service configuration' \
+    'help lists production service generation'
+
+SERVICE_HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
+    WARI_NETWORK_MARKER="$NETWORK_MARKER" ./wari service --help)"
+assert_contains "$SERVICE_HELP_OUTPUT" \
+    'service generate <systemd|supervisor>' \
+    'service help works before runtime setup'
+
+set +e
+(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
+    WARI_NETWORK_MARKER="$NETWORK_MARKER" \
+    ./wari service generate supervisor \
+        --profile=classic --user="$(id -un)" \
+        >"$LAUNCHER_TMP/service-before-setup.out" \
+        2>"$LAUNCHER_TMP/service-before-setup.err")
+SERVICE_BEFORE_SETUP_STATUS=$?
+set -e
+assert_eq '1' "$SERVICE_BEFORE_SETUP_STATUS" \
+    'service generation requires explicit setup'
+assert_contains "$(<"$LAUNCHER_TMP/service-before-setup.err")" './wari setup' \
+    'service generation explains how to install the runtime'
+assert_eq '' "$(<"$LAUNCHER_TMP/service-before-setup.out")" \
+    'service generation before setup leaves stdout empty'
 
 VERSION_OUTPUT="$(cd "$PROJECT" && ./wari --version)"
-assert_contains "$VERSION_OUTPUT" 'Wari 0.2.1' 'version works before setup'
+assert_contains "$VERSION_OUTPUT" 'Wari 0.3.0' 'version works before setup'
 
 for command_name in php composer serve frankenphp create-project; do
     set +e
@@ -65,8 +108,7 @@ assert_contains "$UNKNOWN_OUTPUT" 'unknown Wari command' \
 
 FOREIGN_PROJECT="$LAUNCHER_TMP/foreign"
 mkdir -p "$FOREIGN_PROJECT/.wari"
-cp "$CORE_DIR/wari" "$FOREIGN_PROJECT/wari"
-cp "$CORE_DIR/wari.lock" "$FOREIGN_PROJECT/wari.lock"
+copy_launcher_pair "$FOREIGN_PROJECT"
 printf 'keep me' >"$FOREIGN_PROJECT/.wari/user-data"
 set +e
 FOREIGN_OUTPUT="$(cd "$FOREIGN_PROJECT" && ./wari php --version 2>&1)"
@@ -91,14 +133,18 @@ write_runtime_fixture() {
 
     mkdir -p "$project/.wari/runtime"
     printf '%s\n' 'Wari runtime layout 2' >"$project/.wari/.wari-owned"
-    cp "$CORE_DIR/wari" "$project/wari"
-    cp "$CORE_DIR/wari.lock" "$project/wari.lock"
+    copy_launcher_pair "$project"
     for command_name in php composer create-project serve frankenphp; do
         cat >"$project/.wari/$command_name" <<'FAKE_RUNTIME'
 #!/usr/bin/env bash
 case "$(basename -- "$0")/${1-}" in
     php/--version) printf 'PHP 8.4.0 (cli)\n' ;;
-    composer/--version) printf 'Composer version 2.8.11 2025-01-01\n' ;;
+    composer/--version)
+        printf '%s\n' \
+            'PHP version 8.4.0 (/fixture/composer.phar)' \
+            'Run the "diagnose" command to get more detailed diagnostics output.' >&2
+        printf 'Composer version 2.8.11 2025-01-01\n'
+        ;;
     frankenphp/version) printf 'FrankenPHP v1.12.7\n' ;;
     *) printf 'runtime-cwd=%s\n' "$PWD"; exit "${FAKE_RUNTIME_EXIT:-0}" ;;
 esac
@@ -111,7 +157,7 @@ FAKE_RUNTIME
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.2.1",
+  "wari_version": "0.3.0",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",
@@ -125,9 +171,9 @@ EOF
 }
 
 if command -v sha256sum >/dev/null 2>&1; then
-    LOCK_SHA="$(sha256sum "$CORE_DIR/wari.lock")"
+    LOCK_SHA="$(sha256sum "$LAUNCHER_TMP/fixture.lock")"
 else
-    LOCK_SHA="$(shasum -a 256 "$CORE_DIR/wari.lock")"
+    LOCK_SHA="$(shasum -a 256 "$LAUNCHER_TMP/fixture.lock")"
 fi
 LOCK_SHA="${LOCK_SHA%%[[:space:]]*}"
 
@@ -160,10 +206,33 @@ assert_eq '17' "$READY_STATUS" 'ready runtime forwards delegated exit status'
 assert_contains "$READY_OUTPUT" "runtime-cwd=$READY_PROJECT" \
     'ready runtime dispatches from the physical project root'
 
+mkdir -p "$READY_PROJECT/public"
+printf '<?php\n' >"$READY_PROJECT/public/index.php"
+set +e
+(cd "$READY_PROJECT" && ./wari service generate supervisor \
+    --profile=classic --user="$(id -un)" \
+    --state-dir="$LAUNCHER_TMP/service state" \
+    >"$LAUNCHER_TMP/service-ready.out" \
+    2>"$LAUNCHER_TMP/service-ready.err")
+SERVICE_READY_STATUS=$?
+set -e
+assert_eq '0' "$SERVICE_READY_STATUS" \
+    'ready runtime permits public service generation'
+assert_contains "$(<"$LAUNCHER_TMP/service-ready.out")" '[program:ready]' \
+    'public service command emits complete configuration'
+assert_contains "$(<"$LAUNCHER_TMP/service-ready.err")" 'supervisorctl' \
+    'public service command emits installation guidance separately'
+if [[ "$(<"$LAUNCHER_TMP/service-ready.err")" == *'PHP version 8.4.0'* ]]; then
+    SERVICE_GUIDE_HAS_COMPOSER_DIAGNOSTIC=1
+else
+    SERVICE_GUIDE_HAS_COMPOSER_DIAGNOSTIC=0
+fi
+assert_eq '0' "$SERVICE_GUIDE_HAS_COMPOSER_DIAGNOSTIC" \
+    'service generation suppresses internal Composer version diagnostics'
+
 MISMATCH_PROJECT="$LAUNCHER_TMP/mismatched-pair"
 mkdir "$MISMATCH_PROJECT"
-cp "$CORE_DIR/wari" "$MISMATCH_PROJECT/wari"
-cp "$CORE_DIR/wari.lock" "$MISMATCH_PROJECT/wari.lock"
+copy_launcher_pair "$MISMATCH_PROJECT"
 printf '# interrupted update\n' >>"$MISMATCH_PROJECT/wari"
 set +e
 MISMATCH_OUTPUT="$(cd "$MISMATCH_PROJECT" && ./wari help 2>&1)"
