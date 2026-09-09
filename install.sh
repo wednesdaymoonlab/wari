@@ -1,10 +1,68 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-WARI_VERSION='0.3.0'
+WARI_VERSION='0.4.0'
 WARI_LEGACY_DISPATCHER_SHA256='e79b82db037f7ee0a0907b27c2a893a53b7677a1ace25a1e6e953ff5aedbac43'
 
-die() { printf 'Error: %s\n' "$1" >&2; return 1; }
+INITIALIZER_ANSI_RESET=$'\033[0m'
+INITIALIZER_ANSI_GREEN=$'\033[1;92m'
+
+initializer_color_enabled() {
+    local file_descriptor="${1:-1}"
+
+    [[ -z "${NO_COLOR+x}" ]] || return 1
+    case "${WARI_COLOR:-auto}" in
+        always) return 0 ;;
+        never) return 1 ;;
+    esac
+    [[ "${TERM:-}" != dumb && -t "$file_descriptor" ]]
+}
+
+initializer_logo() {
+    if initializer_color_enabled; then
+        printf '%b' "$INITIALIZER_ANSI_GREEN"
+    fi
+    printf '%s\n' \
+        ' _       __ ___    ____   ____' \
+        '| |     / //   |  / __ \ /  _/' \
+        '| | /| / // /| | / /_/ / / /' \
+        '| |/ |/ // ___ |/ _, _/_/ /' \
+        '|__/|__//_/  |_/_/ |_|/___/'
+    if initializer_color_enabled; then
+        printf '%b' "$INITIALIZER_ANSI_RESET"
+    fi
+    printf '%33s\n' "v$WARI_VERSION"
+}
+
+initializer_banner() {
+    if initializer_color_enabled; then
+        printf '%b' "$INITIALIZER_ANSI_GREEN"
+    fi
+    printf '+ %-28s ------------------\n' "$1"
+    if initializer_color_enabled; then
+        printf '%b' "$INITIALIZER_ANSI_RESET"
+    fi
+}
+
+initializer_status() {
+    if initializer_color_enabled; then
+        printf '  %b[ OK ]%b %-14s %s\n' \
+            "$INITIALIZER_ANSI_GREEN" "$INITIALIZER_ANSI_RESET" "$1" "$2"
+    else
+        printf '  [ OK ] %-14s %s\n' "$1" "$2"
+    fi
+}
+
+initializer_error() {
+    if initializer_color_enabled 2; then
+        printf '  %b[FAIL]%b %s\n' \
+            $'\033[1;91m' "$INITIALIZER_ANSI_RESET" "$1" >&2
+    else
+        printf '  [FAIL] %s\n' "$1" >&2
+    fi
+}
+
+die() { initializer_error "$1"; return 1; }
 can_show_download_progress() { [[ -t 2 ]]; }
 
 validate_initializer_semver() {
@@ -96,8 +154,8 @@ verify_checksum() {
     local algorithm="$1" expected="$2" file="$3" actual
     actual="$(calculate_checksum "$algorithm" "$file")" || return 1
     [[ "$actual" == "$expected" ]] || {
-        printf 'Error: %s checksum mismatch.\nExpected: %s\nActual:   %s\n' \
-            "$algorithm" "$expected" "$actual" >&2
+        initializer_error "$algorithm checksum mismatch."
+        printf '  Expected: %s\n  Actual:   %s\n' "$expected" "$actual" >&2
         return 1
     }
 }
@@ -172,7 +230,11 @@ generate_staged_lock() {
     local linux_build="$4"
     local -a generator_args
 
-    generator_args=(--generate-lock "$staging/wari.lock" --linux-build "$linux_build")
+    generator_args=(
+        --generate-lock "$staging/wari.lock"
+        --linux-build "$linux_build"
+        --lock-version 2
+    )
     [[ -z "$frankenphp_request" ]] || generator_args+=(--frankenphp "$frankenphp_request")
     [[ -z "$composer_request" ]] || generator_args+=(--composer "$composer_request")
     bash "$staging/wari" "${generator_args[@]}"
@@ -361,8 +423,17 @@ initializer_main() (
     rmdir -- "$staging"
     published_wari=0; published_lock=0
     trap - EXIT INT TERM HUP
-    printf '%s\n' 'Wari was added to this project.' '' 'Next:' \
-        '  ./wari setup' '' 'Commit these files:' '  wari' '  wari.lock' '  .gitignore'
+    initializer_logo
+    printf '\n'
+    initializer_banner 'WARI ADDED'
+    printf '\n'
+    initializer_status Launcher wari
+    initializer_status 'Lock file' wari.lock
+    initializer_status 'Git ignore' updated
+    printf '\n'
+    initializer_banner NEXT
+    printf '\n  ./wari setup\n\nCommit these files:\n'
+    printf '  wari\n  wari.lock\n  .gitignore\n'
 )
 
 if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]-}" == "$0" ]]; then

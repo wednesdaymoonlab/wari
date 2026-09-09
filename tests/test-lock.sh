@@ -59,6 +59,64 @@ assert_eq '1.12.7' "$LOCK_FRANKENPHP_VERSION" 'loads the locked FrankenPHP versi
 assert_eq '2.8.11' "$LOCK_COMPOSER_VERSION" 'loads the locked Composer version'
 assert_eq 'static' "$LOCK_LINUX_BUILD" 'loads the locked Linux build'
 
+FORMAT2_LOCK="$LOCK_TMP/format2.lock"
+write_format2_lock "$FORMAT2_LOCK"
+set +e
+parse_lock "$FORMAT2_LOCK" >/dev/null 2>&1
+FORMAT2_STATUS=$?
+set -e
+assert_eq '0' "$FORMAT2_STATUS" 'accepts a complete canonical format 2 lock'
+if [[ "$FORMAT2_STATUS" -eq 0 ]]; then
+    assert_eq '2' "$LOCK_VERSION" 'loads format 2 as the active lock format'
+    assert_eq '0.4.0' "$LOCK_WARI_VERSION" 'loads the format 2 Wari version'
+    assert_eq '1.12.7' "$LOCK_FRANKENPHP_VERSION" \
+        'loads the format 2 FrankenPHP version'
+    assert_eq '2.8.11' "$LOCK_COMPOSER_VERSION" \
+        'loads the format 2 Composer version'
+    assert_eq 'static' "$LOCK_LINUX_BUILD" 'loads the format 2 Linux build'
+fi
+
+FORMAT2_WITH_HASH="$LOCK_TMP/format2-with-hash.lock"
+{
+    cat "$FORMAT2_LOCK"
+    printf 'wari_sha256=%064d\n' 0
+} >"$FORMAT2_WITH_HASH"
+set +e
+FORMAT2_HASH_OUTPUT="$(parse_lock "$FORMAT2_WITH_HASH" 2>&1)"
+FORMAT2_HASH_STATUS=$?
+set -e
+assert_eq '1' "$FORMAT2_HASH_STATUS" 'format 2 rejects legacy checksum keys'
+assert_contains "$FORMAT2_HASH_OUTPUT" 'format 2 does not allow checksum keys' \
+    'format 2 checksum rejection explains the schema boundary'
+
+FORMAT2_REORDERED="$LOCK_TMP/format2-reordered.lock"
+printf '%s\n' \
+    'lock_version=2' \
+    'frankenphp_version=1.12.7' \
+    'wari_version=0.4.0' \
+    'composer_version=2.8.11' \
+    'linux_build=static' >"$FORMAT2_REORDERED"
+assert_fails 'format 2 rejects keys outside canonical order' \
+    parse_lock "$FORMAT2_REORDERED"
+
+FORMAT2_BLANK="$LOCK_TMP/format2-blank.lock"
+{
+    sed -n '1,2p' "$FORMAT2_LOCK"
+    printf '\n'
+    sed -n '3,5p' "$FORMAT2_LOCK"
+} >"$FORMAT2_BLANK"
+assert_fails 'format 2 rejects blank lines' parse_lock "$FORMAT2_BLANK"
+
+FORMAT2_CONTROL="$LOCK_TMP/format2-control.lock"
+printf 'lock_version=2\nwari_version=0.4.0\r\nfrankenphp_version=1.12.7\ncomposer_version=2.8.11\nlinux_build=static\n' \
+    >"$FORMAT2_CONTROL"
+assert_fails 'format 2 rejects control characters' parse_lock "$FORMAT2_CONTROL"
+
+FORMAT2_UNSUPPORTED="$LOCK_TMP/format2-unsupported.lock"
+sed 's/^lock_version=2$/lock_version=3/' \
+    "$FORMAT2_LOCK" >"$FORMAT2_UNSUPPORTED"
+assert_fails 'rejects an unsupported lock format' parse_lock "$FORMAT2_UNSUPPORTED"
+
 DUPLICATE_LOCK="$LOCK_TMP/duplicate.lock"
 cp "$VALID_LOCK" "$DUPLICATE_LOCK"
 printf '%s\n' 'wari_version=0.2.1' >>"$DUPLICATE_LOCK"
@@ -94,8 +152,8 @@ PLATFORM_ARCH='x86_64'
 select_locked_asset
 assert_eq 'frankenphp-linux-x86_64-gnu' "$ASSET_NAME" \
     'selects the locked GNU Linux x86 asset'
-assert_eq "$(sha256_digit 2)" "$ASSET_SHA256" \
-    'selects the locked Linux x86 checksum'
+assert_eq '' "${ASSET_SHA256-}" \
+    'asset selection does not trust the legacy Linux checksum'
 
 parse_lock "$VALID_LOCK"
 PLATFORM_OS='darwin'
@@ -103,8 +161,29 @@ PLATFORM_ARCH='arm64'
 select_locked_asset
 assert_eq 'frankenphp-mac-arm64' "$ASSET_NAME" \
     'selects the macOS Apple Silicon asset'
-assert_eq "$(sha256_digit 5)" "$ASSET_SHA256" \
-    'selects the locked macOS ARM checksum'
+assert_eq '' "${ASSET_SHA256-}" \
+    'asset selection does not trust the legacy macOS checksum'
+
+LEGACY_CHANGED_SHA="$LOCK_TMP/legacy-changed-sha.lock"
+write_format1_lock "$LOCK_TMP/legacy-current-version.lock" "$CORE_DIR/wari"
+sed 's/^wari_sha256=.*/wari_sha256=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff/' \
+    "$LOCK_TMP/legacy-current-version.lock" >"$LEGACY_CHANGED_SHA"
+set +e
+if declare -F validate_launcher_lock_version >/dev/null 2>&1; then
+    validate_launcher_lock_version "$CORE_DIR/wari" \
+        "$LEGACY_CHANGED_SHA" >/dev/null 2>&1
+    LEGACY_IDENTITY_STATUS=$?
+else
+    LEGACY_IDENTITY_STATUS=127
+fi
+set -e
+assert_eq '0' "$LEGACY_IDENTITY_STATUS" \
+    'legacy launcher checksum is not an identity input'
+
+WRONG_VERSION="$LOCK_TMP/wrong-version.lock"
+write_format2_lock "$WRONG_VERSION" 9.9.9
+assert_fails 'launcher identity still requires the locked Wari version' \
+    validate_launcher_pair "$CORE_DIR/wari" "$WRONG_VERSION"
 
 assert_fails 'semantic versions reject prerelease text' \
     validate_semver '1.2.3-rc1'
@@ -179,7 +258,8 @@ done
 case "$url" in
     https://api.github.com/repos/php/frankenphp/releases/latest|\
     https://api.github.com/repos/php/frankenphp/releases/tags/v1.12.7)
-        cp "$WARI_TEST_FIXTURES/frankenphp-release.json" "$destination"
+        cp "${WARI_TEST_RELEASE_FIXTURE:-$WARI_TEST_FIXTURES/frankenphp-release.json}" \
+            "$destination"
         ;;
     https://getcomposer.org/versions)
         cp "$WARI_TEST_FIXTURES/composer-versions.json" "$destination"
@@ -201,6 +281,9 @@ case "$url" in
         ;;
     *) exit 22 ;;
 esac
+if [[ -n "${WARI_GENERATOR_REQUEST_LOG:-}" ]]; then
+    printf '%s\n' "$url" >>"$WARI_GENERATOR_REQUEST_LOG"
+fi
 printf '%s' "$url"
 CANONICAL_FAKE_CURL
 chmod 755 "$CANON_FAKE_BIN/curl"
@@ -226,6 +309,75 @@ if [[ "$CANONICAL_STATUS" -eq 0 ]]; then
         "$LOCK_WARI_SHA256" \
         'generated lock binds the executing launcher bytes'
 fi
+
+FORMAT2_GENERATED="$LOCK_TMP/generated-v2.lock"
+FORMAT2_REQUEST_LOG="$LOCK_TMP/generated-v2-requests"
+set +e
+PATH="$CANON_FAKE_BIN:$PATH" WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
+    WARI_GENERATOR_REQUEST_LOG="$FORMAT2_REQUEST_LOG" \
+    bash "$CORE_DIR/wari" --generate-lock "$FORMAT2_GENERATED" \
+    --frankenphp 1.12.7 --composer 2.8.11 --linux-build static \
+    --lock-version 2 >/dev/null 2>&1
+FORMAT2_GENERATED_STATUS=$?
+set -e
+assert_eq '0' "$FORMAT2_GENERATED_STATUS" \
+    'hidden generator creates an explicit format 2 lock'
+if [[ "$FORMAT2_GENERATED_STATUS" -eq 0 ]]; then
+    EXPECTED_FORMAT2="$(printf '%s\n' \
+        'lock_version=2' \
+        'wari_version=0.4.0' \
+        'frankenphp_version=1.12.7' \
+        'composer_version=2.8.11' \
+        'linux_build=static')"
+    assert_eq "$EXPECTED_FORMAT2" "$(<"$FORMAT2_GENERATED")" \
+        'format 2 generator writes exactly five ordered keys'
+fi
+if [[ -f "$FORMAT2_REQUEST_LOG" ]]; then
+    assert_not_contains "$(<"$FORMAT2_REQUEST_LOG")" \
+        'composer.phar.sha256sum' \
+        'format 2 generation does not fetch Composer artifact checksums'
+    assert_not_contains "$(<"$FORMAT2_REQUEST_LOG")" \
+        'composer.github.io/installer.sig' \
+        'format 2 generation does not fetch the Composer installer signature'
+fi
+
+assert_fails 'lock generator rejects duplicate lock-version options' \
+    bash "$CORE_DIR/wari" --generate-lock "$LOCK_TMP/duplicate-version.lock" \
+    --lock-version 2 --lock-version 2
+assert_fails 'lock generator rejects an unsupported output format' \
+    bash "$CORE_DIR/wari" --generate-lock "$LOCK_TMP/unsupported-version.lock" \
+    --lock-version 3
+
+VERSION_ONLY_RELEASE="$LOCK_TMP/version-only-release.json"
+cat >"$VERSION_ONLY_RELEASE" <<'VERSION_ONLY_JSON'
+{
+  "tag_name": "v1.12.7",
+  "draft": false,
+  "prerelease": false,
+  "assets": []
+}
+VERSION_ONLY_JSON
+set +e
+PATH="$CANON_FAKE_BIN:$PATH" WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
+    WARI_TEST_RELEASE_FIXTURE="$VERSION_ONLY_RELEASE" \
+    bash "$CORE_DIR/wari" --generate-lock "$LOCK_TMP/version-only-v2.lock" \
+    --frankenphp 1.12.7 --composer 2.8.11 --linux-build static \
+    --lock-version 2 >/dev/null 2>&1
+VERSION_ONLY_STATUS=$?
+set -e
+assert_eq '0' "$VERSION_ONLY_STATUS" \
+    'format 2 generation resolves versions without requiring artifact digests'
+
+V030_CANDIDATE="$LOCK_TMP/v030-candidate.lock"
+PATH="$CANON_FAKE_BIN:$PATH" WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
+    bash "$CORE_DIR/wari" --generate-lock "$V030_CANDIDATE" \
+    --frankenphp 1.12.7 --composer 2.8.11 --linux-build static >/dev/null
+assert_eq 'lock_version=1' "$(sed -n '1p' "$V030_CANDIDATE")" \
+    'omitted lock version preserves the Wari 0.3.0 format 1 handshake'
+assert_eq '12' "$(wc -l <"$V030_CANDIDATE" | tr -d ' ')" \
+    'compatibility generator preserves the complete format 1 schema'
+parse_lock "$V030_CANDIDATE"
+assert_eq '1' "$LOCK_VERSION" 'Wari 0.4 reads its format 1 handshake output'
 
 ENV_LOCK="$LOCK_TMP/environment-isolated.lock"
 set +e
@@ -289,6 +441,10 @@ FAKE_WARI
             'maintainer lock tool forwards exact FrankenPHP selection'
         assert_contains "$(<"$DELEGATE_MARKER")" '--composer' \
             'maintainer lock tool forwards exact Composer selection'
+        assert_contains "$(<"$DELEGATE_MARKER")" '--lock-version' \
+            'maintainer lock tool requests the current project lock format'
+        assert_contains "$(<"$DELEGATE_MARKER")" $'--lock-version\n2' \
+            'maintainer lock tool explicitly requests format 2'
     fi
 
     FAKE_BIN="$LOCK_TMP/fake-bin"
@@ -330,7 +486,7 @@ FAKE_CURL
     set +e
     PATH="$FAKE_BIN:$PATH" WARI_GENERATOR_RETRY_MARKER="$RETRY_MARKER" \
         WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
-        bash "$GENERATOR" 0.3.0 1.12.7 2.8.11 static >"$GENERATED_LOCK"
+        bash "$GENERATOR" 0.4.0 1.12.7 2.8.11 static >"$GENERATED_LOCK"
     GENERATOR_STATUS=$?
     set -e
     assert_eq '0' "$GENERATOR_STATUS" \

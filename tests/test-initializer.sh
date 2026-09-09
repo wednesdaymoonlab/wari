@@ -10,7 +10,7 @@ source "$TEST_DIR/test-helper.sh"
 # shellcheck source=../install.sh
 source "$CORE_DIR/install.sh"
 
-assert_eq '0.3.0' "$WARI_VERSION" \
+assert_eq '0.4.0' "$WARI_VERSION" \
     'initializer version matches the tracked launcher release'
 
 PIPE_HELP_OUTPUT="$(bash -s -- --help <"$CORE_DIR/install.sh")"
@@ -135,31 +135,48 @@ assert_eq '0' "$LOCAL_STATUS" \
 assert_eq '0' "$(test ! -e "$LOCAL_PROJECT/.wari"; printf '%s' "$?")" \
     'local-source initialization leaves runtime setup explicit'
 if [[ "$LOCAL_STATUS" -eq 0 ]]; then
-    assert_eq 'Wari 0.3.0' "$("$LOCAL_PROJECT/wari" --version)" \
+    assert_eq 'Wari 0.4.0' "$("$LOCAL_PROJECT/wari" --version)" \
         'local-source initialization publishes the working launcher'
     bash "$LOCAL_PROJECT/wari" --validate-pair "$LOCAL_PROJECT/wari.lock"
     assert_eq '0' "$?" 'local-source initialization publishes a valid pair'
+    EXPECTED_LOCAL_LOCK="$(printf '%s\n' \
+        'lock_version=2' \
+        'wari_version=0.4.0' \
+        'frankenphp_version=1.12.7' \
+        'composer_version=2.8.11' \
+        'linux_build=static')"
+    assert_eq "$EXPECTED_LOCAL_LOCK" "$(<"$LOCAL_PROJECT/wari.lock")" \
+        'initializer publishes exactly the five format 2 version keys'
 fi
 
 fetch_tracked_files() {
     local staging="$1"
-    local launcher_sha
     cp "$CORE_DIR/wari" "$staging/wari"
-    launcher_sha="$(calculate_checksum sha256 "$staging/wari")"
-    sed "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-        "$CORE_DIR/wari.lock" >"$staging/wari.lock"
+    write_format2_lock "$staging/wari.lock"
     chmod 755 "$staging/wari"
 }
 
 PROJECT="$INIT_TMP/project with spaces"
 mkdir -p "$PROJECT"
 printf '*.log\n' >"$PROJECT/.gitignore"
-(
+INITIALIZER_OUTPUT="$(
     cd "$PROJECT"
     initializer_main --yes
-)
+)"
 INITIALIZER_STATUS=$?
 assert_eq '0' "$INITIALIZER_STATUS" 'initializer publishes tracked project files'
+assert_contains "$INITIALIZER_OUTPUT" '_       __ ___    ____   ____' \
+    'initializer success displays the selected Wari ASCII logo'
+assert_contains "$INITIALIZER_OUTPUT" '+ WARI ADDED' \
+    'initializer success displays the retro completion banner'
+assert_contains "$INITIALIZER_OUTPUT" '[ OK ] Launcher' \
+    'initializer identifies the published launcher'
+assert_contains "$INITIALIZER_OUTPUT" '[ OK ] Lock file' \
+    'initializer identifies the published lock file'
+assert_contains "$INITIALIZER_OUTPUT" '+ NEXT' \
+    'initializer separates the next action'
+assert_contains "$INITIALIZER_OUTPUT" './wari setup' \
+    'initializer points to explicit runtime setup'
 assert_eq '0' "$(test -x "$PROJECT/wari"; printf '%s' "$?")" \
     'initializer publishes an executable launcher'
 assert_eq '0' "$(test -f "$PROJECT/wari.lock"; printf '%s' "$?")" \

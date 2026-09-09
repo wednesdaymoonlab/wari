@@ -17,17 +17,9 @@ FAKE_BIN="$LAUNCHER_TMP/fake-bin"
 NETWORK_MARKER="$LAUNCHER_TMP/network-called"
 mkdir -p "$PROJECT" "$FAKE_BIN"
 cp "$CORE_DIR/wari" "$PROJECT/wari"
-cp "$CORE_DIR/wari.lock" "$PROJECT/wari.lock"
+write_format2_lock "$PROJECT/wari.lock"
 chmod 755 "$PROJECT/wari"
-
-if command -v sha256sum >/dev/null 2>&1; then
-    LAUNCHER_SHA="$(sha256sum "$PROJECT/wari")"
-else
-    LAUNCHER_SHA="$(shasum -a 256 "$PROJECT/wari")"
-fi
-LAUNCHER_SHA="${LAUNCHER_SHA%%[[:space:]]*}"
-sed "s/^wari_sha256=.*/wari_sha256=$LAUNCHER_SHA/" \
-    "$PROJECT/wari.lock" >"$LAUNCHER_TMP/fixture.lock"
+cp "$PROJECT/wari.lock" "$LAUNCHER_TMP/fixture.lock"
 cp "$LAUNCHER_TMP/fixture.lock" "$PROJECT/wari.lock"
 
 copy_launcher_pair() {
@@ -45,8 +37,49 @@ exit 99
 FAKE_CURL
 chmod 755 "$FAKE_BIN/curl"
 
+LOCK_FREE_PROJECT="$LAUNCHER_TMP/lock-free"
+mkdir -p "$LOCK_FREE_PROJECT"
+cp "$CORE_DIR/wari" "$LOCK_FREE_PROJECT/wari"
+chmod 755 "$LOCK_FREE_PROJECT/wari"
+
+LOCK_FREE_HELP="$(cd "$LOCK_FREE_PROJECT" && ./wari --help 2>&1)"
+LOCK_FREE_HELP_STATUS=$?
+assert_eq '0' "$LOCK_FREE_HELP_STATUS" 'core help works without wari.lock'
+assert_contains "$LOCK_FREE_HELP" 'PROJECT-LOCAL PHP RUNTIME' \
+    'lock-free core help retains the normal command guide'
+
+LOCK_FREE_VERSION="$(cd "$LOCK_FREE_PROJECT" && ./wari --version 2>&1)"
+LOCK_FREE_VERSION_STATUS=$?
+assert_eq '0' "$LOCK_FREE_VERSION_STATUS" 'core version works without wari.lock'
+assert_eq 'Wari 0.4.0' "$LOCK_FREE_VERSION" \
+    'lock-free core version reports the executing launcher version'
+
+set +e
+LOCK_FREE_SETUP="$(cd "$LOCK_FREE_PROJECT" && PATH="$FAKE_BIN:$PATH" \
+    WARI_NETWORK_MARKER="$NETWORK_MARKER" ./wari setup --yes 2>&1)"
+LOCK_FREE_SETUP_STATUS=$?
+set -e
+assert_eq '1' "$LOCK_FREE_SETUP_STATUS" \
+    'project setup rejects a missing wari.lock'
+assert_contains "$LOCK_FREE_SETUP" 'initialize Wari in this PHP project' \
+    'missing project lock explains how to initialize Wari'
+assert_eq '0' "$(test ! -e "$NETWORK_MARKER"; printf '%s' "$?")" \
+    'missing project lock fails before network access'
+
 HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
     WARI_NETWORK_MARKER="$NETWORK_MARKER" ./wari help)"
+assert_contains "$HELP_OUTPUT" '_       __ ___    ____   ____' \
+    'help displays the selected Wari ASCII logo'
+assert_contains "$HELP_OUTPUT" 'PROJECT-LOCAL PHP RUNTIME' \
+    'help identifies the product purpose'
+assert_contains "$HELP_OUTPUT" 'DEVELOPMENT' \
+    'help groups development commands'
+assert_contains "$HELP_OUTPUT" 'RUNTIME' \
+    'help groups runtime commands'
+assert_contains "$HELP_OUTPUT" 'MAINTENANCE' \
+    'help groups maintenance commands'
+assert_not_contains "$HELP_OUTPUT" $'\033[' \
+    'redirected help contains no ANSI styling'
 assert_contains "$HELP_OUTPUT" 'setup' 'help lists setup before a runtime exists'
 assert_contains "$HELP_OUTPUT" 'composer' 'help lists runtime commands before setup'
 assert_contains "$HELP_OUTPUT" 'Update locked FrankenPHP and Composer' \
@@ -54,8 +87,20 @@ assert_contains "$HELP_OUTPUT" 'Update locked FrankenPHP and Composer' \
 assert_contains "$HELP_OUTPUT" 'self-update VERSION' \
     'help lists exact launcher self-update separately'
 assert_contains "$HELP_OUTPUT" \
-    'service          Generate production service configuration' \
+    'service               Generate production service configuration' \
     'help lists production service generation'
+
+COLOR_HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
+    env -u NO_COLOR WARI_COLOR=always WARI_NETWORK_MARKER="$NETWORK_MARKER" \
+    ./wari help)"
+assert_contains "$COLOR_HELP_OUTPUT" $'\033[' \
+    'explicit color mode styles help output'
+
+NO_COLOR_HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
+    WARI_COLOR=always NO_COLOR=1 WARI_NETWORK_MARKER="$NETWORK_MARKER" \
+    ./wari help)"
+assert_not_contains "$NO_COLOR_HELP_OUTPUT" $'\033[' \
+    'NO_COLOR overrides explicit color mode'
 
 SERVICE_HELP_OUTPUT="$(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" \
     WARI_NETWORK_MARKER="$NETWORK_MARKER" ./wari service --help)"
@@ -80,7 +125,7 @@ assert_eq '' "$(<"$LAUNCHER_TMP/service-before-setup.out")" \
     'service generation before setup leaves stdout empty'
 
 VERSION_OUTPUT="$(cd "$PROJECT" && ./wari --version)"
-assert_contains "$VERSION_OUTPUT" 'Wari 0.3.0' 'version works before setup'
+assert_contains "$VERSION_OUTPUT" 'Wari 0.4.0' 'version works before setup'
 
 for command_name in php composer serve frankenphp create-project; do
     set +e
@@ -91,6 +136,11 @@ for command_name in php composer serve frankenphp create-project; do
     assert_eq '1' "$COMMAND_STATUS" "$command_name requires explicit setup"
     assert_contains "$COMMAND_OUTPUT" './wari setup' \
         "$command_name explains how to install the runtime"
+    assert_contains "$COMMAND_OUTPUT" '[FAIL]' \
+        "$command_name marks runtime readiness errors"
+    assert_not_contains "$COMMAND_OUTPUT" \
+        'Wari runtime is not ready for this project.' \
+        "$command_name does not duplicate its specific runtime diagnosis"
 done
 
 assert_eq '0' "$(test ! -e "$NETWORK_MARKER"; printf '%s' "$?")" \
@@ -157,7 +207,7 @@ FAKE_RUNTIME
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.3.0",
+  "wari_version": "0.4.0",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",
@@ -209,7 +259,8 @@ assert_contains "$READY_OUTPUT" "runtime-cwd=$READY_PROJECT" \
 mkdir -p "$READY_PROJECT/public"
 printf '<?php\n' >"$READY_PROJECT/public/index.php"
 set +e
-(cd "$READY_PROJECT" && ./wari service generate supervisor \
+(cd "$READY_PROJECT" && env -u NO_COLOR WARI_COLOR=always \
+    ./wari service generate supervisor \
     --profile=classic --user="$(id -un)" \
     --state-dir="$LAUNCHER_TMP/service state" \
     >"$LAUNCHER_TMP/service-ready.out" \
@@ -220,6 +271,8 @@ assert_eq '0' "$SERVICE_READY_STATUS" \
     'ready runtime permits public service generation'
 assert_contains "$(<"$LAUNCHER_TMP/service-ready.out")" '[program:ready]' \
     'public service command emits complete configuration'
+assert_not_contains "$(<"$LAUNCHER_TMP/service-ready.out")" $'\033[' \
+    'generated service configuration remains free of ANSI styling'
 assert_contains "$(<"$LAUNCHER_TMP/service-ready.err")" 'supervisorctl' \
     'public service command emits installation guidance separately'
 if [[ "$(<"$LAUNCHER_TMP/service-ready.err")" == *'PHP version 8.4.0'* ]]; then
@@ -230,16 +283,18 @@ fi
 assert_eq '0' "$SERVICE_GUIDE_HAS_COMPOSER_DIAGNOSTIC" \
     'service generation suppresses internal Composer version diagnostics'
 
-MISMATCH_PROJECT="$LAUNCHER_TMP/mismatched-pair"
+MISMATCH_PROJECT="$LAUNCHER_TMP/mismatched-version"
 mkdir "$MISMATCH_PROJECT"
 copy_launcher_pair "$MISMATCH_PROJECT"
-printf '# interrupted update\n' >>"$MISMATCH_PROJECT/wari"
+sed 's/^wari_version=.*/wari_version=9.9.9/' \
+    "$MISMATCH_PROJECT/wari.lock" >"$MISMATCH_PROJECT/wari.lock.next"
+mv "$MISMATCH_PROJECT/wari.lock.next" "$MISMATCH_PROJECT/wari.lock"
 set +e
-MISMATCH_OUTPUT="$(cd "$MISMATCH_PROJECT" && ./wari help 2>&1)"
+MISMATCH_OUTPUT="$(cd "$MISMATCH_PROJECT" && ./wari php --version 2>&1)"
 MISMATCH_STATUS=$?
 set -e
-assert_eq '1' "$MISMATCH_STATUS" 'launcher rejects a mismatched tracked pair'
-assert_contains "$MISMATCH_OUTPUT" 'does not match wari.lock' \
-    'tracked-pair mismatch gives a recovery diagnosis'
+assert_eq '1' "$MISMATCH_STATUS" 'project command rejects a mismatched Wari version'
+assert_contains "$MISMATCH_OUTPUT" 'version does not match wari.lock' \
+    'version mismatch gives a focused recovery diagnosis'
 
 finish_tests

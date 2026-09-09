@@ -5,7 +5,7 @@ CORE_DIR="$(dirname -- "$TEST_DIR")"
 source "$TEST_DIR/test-helper.sh"
 source "$CORE_DIR/install.sh"
 
-assert_eq '0.3.0' "$WARI_VERSION" 'thin initializer reports its release version'
+assert_eq '0.4.0' "$WARI_VERSION" 'thin initializer reports its release version'
 PIPE_HELP_OUTPUT="$(bash -s -- --help <"$CORE_DIR/install.sh")"
 assert_contains "$PIPE_HELP_OUTPUT" 'Add the tracked Wari launcher and lock' \
     'pipe mode runs the project initializer'
@@ -31,6 +31,8 @@ assert_eq '1' "$NONINTERACTIVE_STATUS" \
     'non-interactive initializer requires explicit consent'
 assert_contains "$NONINTERACTIVE_OUTPUT" '--yes' \
     'non-interactive initializer explains the automation flag'
+assert_contains "$NONINTERACTIVE_OUTPUT" '[FAIL]' \
+    'initializer marks failures with the retro status label'
 assert_eq '0' "$(test ! -e "$NONINTERACTIVE/.wari"; printf '%s' "$?")" \
     'initializer never creates a local runtime'
 finish_tests

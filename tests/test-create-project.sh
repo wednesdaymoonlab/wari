@@ -40,7 +40,7 @@ FAKE_FRANKENPHP
     chmod 755 "$wari/runtime/frankenphp"
     generate_wrappers "$wari"
     cp "$CORE_DIR/wari" "$project/wari"
-    cp "$CORE_DIR/wari.lock" "$project/wari.lock"
+    write_format2_lock "$project/wari.lock"
     chmod 755 "$project/wari"
     write_wari_ignore_block_for_test >"$project/.gitignore"
     printf '%s\n' 'Wari runtime layout 2' >"$wari/.wari-owned"
@@ -54,7 +54,7 @@ FAKE_FRANKENPHP
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.3.0",
+  "wari_version": "0.4.0",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",
@@ -331,6 +331,14 @@ assert_contains "$SUCCESS_OUTPUT" "$SUCCESS_PROJECT" \
     'create-project success reports the physical project root'
 assert_contains "$SUCCESS_OUTPUT" './wari php --version' \
     'create-project success prints a framework-neutral PHP command'
+assert_contains "$SUCCESS_OUTPUT" '+ PROJECT CREATED' \
+    'create-project success displays a retro completion banner'
+assert_contains "$SUCCESS_OUTPUT" '[ OK ] Location' \
+    'create-project success identifies the destination'
+assert_contains "$SUCCESS_OUTPUT" '+ READY' \
+    'create-project success separates follow-up commands'
+assert_not_contains "$SUCCESS_OUTPUT" $'\033[' \
+    'redirected create-project output contains no ANSI styling'
 assert_eq '' "$(find "$CREATE_TMP" -maxdepth 1 -name '.success app.wari-create.*' -print -quit)" \
     'create-project removes its sibling staging directory'
 

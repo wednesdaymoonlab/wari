@@ -51,12 +51,8 @@ printf 'fake composer' >"$WARI/runtime/composer.phar"
 
 generate_wrappers "$WARI"
 cp "$CORE_DIR/wari" "$DISPATCHER"
-cp "$CORE_DIR/wari.lock" "$PROJECT/wari.lock"
+write_format2_lock "$PROJECT/wari.lock"
 chmod 755 "$DISPATCHER"
-DISPATCHER_SHA="$(calculate_checksum sha256 "$DISPATCHER")"
-sed "s/^wari_sha256=.*/wari_sha256=$DISPATCHER_SHA/" \
-    "$PROJECT/wari.lock" >"$PROJECT/wari.lock.next"
-mv -- "$PROJECT/wari.lock.next" "$PROJECT/wari.lock"
 
 case "$(uname -s)" in
     Linux) TEST_OS='linux' ;;
@@ -76,7 +72,7 @@ cat >"$WARI/manifest.json" <<EOF
 {
   "layout_version": 2,
   "lock_sha256": "$LOCK_SHA",
-  "wari_version": "0.3.0",
+  "wari_version": "0.4.0",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",

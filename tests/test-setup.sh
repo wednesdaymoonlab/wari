@@ -10,6 +10,25 @@ source "$TEST_DIR/test-helper.sh"
 # shellcheck source=../wari
 source "$CORE_DIR/wari"
 
+COLOR_STATUS_OUTPUT="$(
+    unset NO_COLOR
+    WARI_COLOR=always ui_status ok Platform 'macOS arm64'
+)"
+assert_contains "$COLOR_STATUS_OUTPUT" $'\033[' \
+    'status output uses ANSI styling when color is enabled'
+assert_contains "$COLOR_STATUS_OUTPUT" '[ OK ]' \
+    'successful status output includes its semantic marker'
+assert_contains "$COLOR_STATUS_OUTPUT" 'Platform' \
+    'successful status output includes its label'
+assert_contains "$COLOR_STATUS_OUTPUT" 'macOS arm64' \
+    'status output includes its detail'
+
+PLAIN_STATUS_OUTPUT="$(WARI_COLOR=never ui_status progress Composer 'installing 2.8.11')"
+assert_not_contains "$PLAIN_STATUS_OUTPUT" $'\033[' \
+    'disabled color mode emits plain status output'
+assert_contains "$PLAIN_STATUS_OUTPUT" '[ .. ] Composer' \
+    'progress status has a stable plain-text marker'
+
 SETUP_TMP="$(mktemp -d "${TMPDIR:-/tmp}/wari-setup-test.XXXXXX")"
 SETUP_TMP="$(CDPATH= cd -- "$SETUP_TMP" && pwd -P)"
 trap 'rm -rf -- "$SETUP_TMP"' EXIT
@@ -26,6 +45,77 @@ checksum_of() {
     calculate_checksum "$1" "$2"
 }
 
+test_setup_metadata_resolution() (
+    local fixture_asset="$SETUP_TMP/metadata-frankenphp"
+    local fixture_release_json="$SETUP_TMP/metadata-release.json"
+    local installer="$SETUP_TMP/metadata-installer"
+    local composer="$SETUP_TMP/metadata-composer"
+    local request_log="$SETUP_TMP/metadata-requests"
+    local asset_sha installer_sha composer_sha
+
+    printf 'current official FrankenPHP bytes' >"$fixture_asset"
+    printf 'current official installer bytes' >"$installer"
+    printf 'current official Composer bytes' >"$composer"
+    asset_sha="$(checksum_of sha256 "$fixture_asset")"
+    installer_sha="$(checksum_of sha384 "$installer")"
+    composer_sha="$(checksum_of sha256 "$composer")"
+    cat >"$fixture_release_json" <<EOF
+{
+  "tag_name": "v1.12.7",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "frankenphp-linux-x86_64",
+      "digest": "sha256:$asset_sha",
+      "browser_download_url": "https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64"
+    }
+  ]
+}
+EOF
+
+    LOCK_FRANKENPHP_VERSION='1.12.7'
+    LOCK_COMPOSER_VERSION='2.8.11'
+    LOCK_LINUX_BUILD='static'
+    LOCK_FRANKENPHP_LINUX_X86_64_SHA256="$(printf '%064d' 8)"
+    LOCK_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 8)"
+    LOCK_COMPOSER_SHA256="$(printf '%064d' 8)"
+    PLATFORM_OS='linux'
+    PLATFORM_ARCH='x86_64'
+
+    download_file() {
+        printf '%s\n' "$1" >>"$request_log"
+        case "$1" in
+            https://api.github.com/repos/php/frankenphp/releases/tags/v1.12.7)
+                cp "$fixture_release_json" "$2" ;;
+            https://composer.github.io/installer.sig)
+                printf '%s\n' "$installer_sha" >"$2" ;;
+            https://getcomposer.org/download/2.8.11/composer.phar.sha256sum)
+                printf '%s  composer.phar\n' "$composer_sha" >"$2" ;;
+            *) return 88 ;;
+        esac
+    }
+
+    resolve_setup_integrity_metadata "$SETUP_TMP/metadata-staging" || return 1
+    [[ "$ASSET_NAME" == 'frankenphp-linux-x86_64' ]] || return 2
+    [[ "$ASSET_SHA256" == "$asset_sha" ]] || return 3
+    [[ "$ASSET_SHA256" != "$LOCK_FRANKENPHP_LINUX_X86_64_SHA256" ]] || return 4
+    [[ "$VERIFIED_COMPOSER_INSTALLER_SHA384" == "$installer_sha" ]] || return 5
+    [[ "$VERIFIED_COMPOSER_SHA256" == "$composer_sha" ]] || return 6
+    [[ "$(<"$request_log")" == *'/tags/v1.12.7'* ]] || return 7
+    [[ "$(<"$request_log")" == *'/download/2.8.11/composer.phar.sha256sum'* ]] || return 8
+    [[ ! -e "$SETUP_TMP/metadata-staging/frankenphp-release.json" &&
+       ! -e "$SETUP_TMP/metadata-staging/composer-installer.sig" &&
+       ! -e "$SETUP_TMP/metadata-staging/composer.sha256sum" ]] || return 9
+)
+
+set +e
+test_setup_metadata_resolution >/dev/null 2>&1
+METADATA_RESOLUTION_STATUS=$?
+set -e
+assert_eq '0' "$METADATA_RESOLUTION_STATUS" \
+    'setup resolves current official integrity metadata for locked versions'
+
 test_locked_artifact_install() (
     STAGING="$SETUP_TMP/staging"
     CAPTURE="$SETUP_TMP/composer-arguments"
@@ -37,6 +127,7 @@ test_locked_artifact_install() (
     PLATFORM_ARCH='x86_64'
     LOCK_LINUX_BUILD='static'
     ASSET_NAME='frankenphp-linux-x86_64'
+    ASSET_URL='https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64'
     ASSET_SHA256="$(printf 'frankenphp-binary' | shasum -a 256 | sed 's/[[:space:]].*//')"
 
     download_file() {
@@ -77,10 +168,12 @@ FAKE_FRANKENPHP
     download_file \
         'https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64' \
         "$SETUP_TMP/frankenphp-reference"
-    LOCK_FRANKENPHP_LINUX_X86_64_SHA256="$(checksum_of sha256 "$SETUP_TMP/frankenphp-reference")"
-    ASSET_SHA256="$LOCK_FRANKENPHP_LINUX_X86_64_SHA256"
-    LOCK_COMPOSER_INSTALLER_SHA384="$(printf 'composer-installer' >"$SETUP_TMP/installer-reference"; checksum_of sha384 "$SETUP_TMP/installer-reference")"
-    LOCK_COMPOSER_SHA256="$(printf 'composer-phar' >"$SETUP_TMP/phar-reference"; checksum_of sha256 "$SETUP_TMP/phar-reference")"
+    ASSET_SHA256="$(checksum_of sha256 "$SETUP_TMP/frankenphp-reference")"
+    LOCK_FRANKENPHP_LINUX_X86_64_SHA256="$(printf '%064d' 8)"
+    VERIFIED_COMPOSER_INSTALLER_SHA384="$(printf 'composer-installer' >"$SETUP_TMP/installer-reference"; checksum_of sha384 "$SETUP_TMP/installer-reference")"
+    VERIFIED_COMPOSER_SHA256="$(printf 'composer-phar' >"$SETUP_TMP/phar-reference"; checksum_of sha256 "$SETUP_TMP/phar-reference")"
+    LOCK_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 8)"
+    LOCK_COMPOSER_SHA256="$(printf '%064d' 8)"
 
     install_locked_frankenphp "$STAGING" || return 1
     WARI_COMPOSER_CAPTURE="$CAPTURE" install_locked_composer "$STAGING" || return 2
@@ -113,14 +206,14 @@ test_bad_composer_installer() (
     mkdir -p "$STAGING/runtime"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$STAGING/runtime/frankenphp"
     chmod 755 "$STAGING/runtime/frankenphp"
-    LOCK_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 0)"
+    VERIFIED_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 0)"
     LOCK_COMPOSER_VERSION='2.8.11'
-    LOCK_COMPOSER_SHA256="$(printf '%064d' 0)"
+    VERIFIED_COMPOSER_SHA256="$(printf '%064d' 0)"
     download_file() { printf 'changed-installer' >"$2"; }
     install_locked_composer "$STAGING"
 )
 
-assert_fails 'rejects a Composer installer that differs from the lock' \
+assert_fails 'rejects a Composer installer that differs from same-run metadata' \
     test_bad_composer_installer
 
 if declare -F write_manifest >/dev/null 2>&1 &&
@@ -135,7 +228,10 @@ if declare -F write_manifest >/dev/null 2>&1 &&
     PLATFORM_OS='linux'
     PLATFORM_ARCH='x86_64'
     ASSET_NAME='frankenphp-linux-x86_64'
+    ASSET_URL='https://github.com/php/frankenphp/releases/download/v1.12.7/frankenphp-linux-x86_64'
     ASSET_SHA256="$(printf '%064d' 7)"
+    VERIFIED_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 7)"
+    VERIFIED_COMPOSER_SHA256="$(printf '%064d' 8)"
     INSTALLED_PHP_VERSION='8.4.0'
     INSTALLED_FRANKENPHP_VERSION='1.12.7'
     INSTALLED_COMPOSER_VERSION='2.8.11'
@@ -147,6 +243,12 @@ if declare -F write_manifest >/dev/null 2>&1 &&
         'manifest binds the runtime to the complete lock'
     assert_contains "$MANIFEST_CONTENT" '"composer_version": "2.8.11"' \
         'manifest records the exact Composer version'
+    assert_contains "$MANIFEST_CONTENT" \
+        "\"composer_installer_sha384\": \"$VERIFIED_COMPOSER_INSTALLER_SHA384\"" \
+        'manifest records the verified Composer installer signature'
+    assert_contains "$MANIFEST_CONTENT" \
+        "\"composer_sha256\": \"$VERIFIED_COMPOSER_SHA256\"" \
+        'manifest records the Composer checksum verified in this setup run'
     assert_eq 'Wari runtime layout 2' "$(<"$MANIFEST_STAGING/.wari-owned")" \
         'staged runtime contains the exact ownership marker'
     for command_name in php composer create-project frankenphp; do
@@ -165,7 +267,7 @@ if declare -F setup_main >/dev/null 2>&1; then
         local project="$1"
         mkdir -p "$project"
         cp "$CORE_DIR/wari" "$project/wari"
-        cp "$CORE_DIR/wari.lock" "$project/wari.lock"
+        write_format2_lock "$project/wari.lock"
         chmod 755 "$project/wari"
     }
 
@@ -200,25 +302,51 @@ FAKE_WRAPPER
         done
     }
 
+    resolve_fake_metadata() {
+        select_locked_asset || return 1
+        ASSET_URL="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
+        ASSET_SHA256="$(printf '%064d' 7)"
+        VERIFIED_COMPOSER_INSTALLER_SHA384="$(printf '%096d' 7)"
+        VERIFIED_COMPOSER_SHA256="$(printf '%064d' 8)"
+    }
+
     INITIAL_PROJECT="$SETUP_TMP/initial project"
     make_setup_project "$INITIAL_PROJECT"
-    (
+    INITIAL_LOCK_BEFORE="$(checksum_of sha256 "$INITIAL_PROJECT/wari.lock")"
+    INITIAL_OUTPUT="$(
         WARI_PROJECT_ROOT="$INITIAL_PROJECT"
         WARI_RUNTIME_DIR="$INITIAL_PROJECT/.wari"
+        resolve_setup_integrity_metadata() { resolve_fake_metadata; }
         install_locked_frankenphp() { install_fake_runtime "$1"; }
         install_locked_composer() { install_fake_composer "$1"; }
         generate_wrappers() { generate_fake_wrappers "$1"; }
         setup_main --yes
-    )
+    )"
     INITIAL_STATUS=$?
     assert_eq '0' "$INITIAL_STATUS" 'explicit setup installs the initial runtime'
+    assert_contains "$INITIAL_OUTPUT" '+ WARI RUNTIME SETUP' \
+        'setup starts with a compact retro header'
+    assert_contains "$INITIAL_OUTPUT" '[ OK ] Platform' \
+        'setup reports the detected platform'
+    assert_contains "$INITIAL_OUTPUT" '[ .. ] FrankenPHP' \
+        'setup reports FrankenPHP installation progress'
+    assert_contains "$INITIAL_OUTPUT" '[ OK ] Composer' \
+        'setup reports the verified Composer version'
+    assert_contains "$INITIAL_OUTPUT" '+ READY' \
+        'setup ends with a ready banner'
+    assert_contains "$INITIAL_OUTPUT" './wari serve' \
+        'setup gives the next development command'
     assert_eq '0' "$(validate_runtime "$INITIAL_PROJECT"; printf '%s' "$?")" \
         'initial setup publishes a runtime matching the lock'
+    assert_eq "$INITIAL_LOCK_BEFORE" \
+        "$(checksum_of sha256 "$INITIAL_PROJECT/wari.lock")" \
+        'setup leaves the project lock byte-for-byte unchanged'
 
     NOOP_MARKER="$SETUP_TMP/noop-installer-called"
     (
         WARI_PROJECT_ROOT="$INITIAL_PROJECT"
         WARI_RUNTIME_DIR="$INITIAL_PROJECT/.wari"
+        resolve_setup_integrity_metadata() { : >"$NOOP_MARKER"; return 91; }
         install_locked_frankenphp() { : >"$NOOP_MARKER"; return 91; }
         setup_main --yes
     )
@@ -265,6 +393,7 @@ FAKE_WRAPPER
         WARI_PROJECT_ROOT="$ROLLBACK_PROJECT"
         WARI_RUNTIME_DIR="$ROLLBACK_PROJECT/.wari"
         validate_runtime() { return 1; }
+        resolve_setup_integrity_metadata() { resolve_fake_metadata; }
         install_locked_frankenphp() { install_fake_runtime "$1"; }
         install_locked_composer() { install_fake_composer "$1"; }
         generate_wrappers() { generate_fake_wrappers "$1"; }
@@ -287,6 +416,7 @@ FAKE_WRAPPER
         WARI_PROJECT_ROOT="$INITIAL_ROLLBACK_PROJECT"
         WARI_RUNTIME_DIR="$INITIAL_ROLLBACK_PROJECT/.wari"
         validate_runtime() { return 1; }
+        resolve_setup_integrity_metadata() { resolve_fake_metadata; }
         install_locked_frankenphp() { install_fake_runtime "$1"; }
         install_locked_composer() { install_fake_composer "$1"; }
         generate_wrappers() { generate_fake_wrappers "$1"; }

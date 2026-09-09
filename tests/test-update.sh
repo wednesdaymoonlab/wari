@@ -16,13 +16,15 @@ trap 'rm -rf -- "$UPDATE_TMP"' EXIT
 
 make_pair() {
     local directory="$1"
+    local lock_version="${2:-1}"
     mkdir -p "$directory"
     cp "$CORE_DIR/wari" "$directory/wari"
     chmod 755 "$directory/wari"
-    local launcher_sha
-    launcher_sha="$(calculate_checksum sha256 "$directory/wari")"
-    sed "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-        "$CORE_DIR/wari.lock" >"$directory/wari.lock"
+    if [[ "$lock_version" == '2' ]]; then
+        write_format2_lock "$directory/wari.lock"
+    else
+        write_format1_lock "$directory/wari.lock" "$directory/wari"
+    fi
 }
 
 write_candidate_lock() {
@@ -31,18 +33,40 @@ write_candidate_lock() {
     local frankenphp_request="$3"
     local composer_request="$4"
     local linux_build="$5"
-    local launcher_sha
     local frankenphp_version="${frankenphp_request:-1.13.0}"
     local composer_version="${composer_request:-2.10.3}"
+    local wari_version
 
-    launcher_sha="$(calculate_checksum sha256 "$launcher")"
-    sed \
-        -e "s/^frankenphp_version=.*/frankenphp_version=$frankenphp_version/" \
-        -e "s/^composer_version=.*/composer_version=$composer_version/" \
-        -e "s/^linux_build=.*/linux_build=$linux_build/" \
-        -e "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-        "$CORE_DIR/wari.lock" >"$output"
+    wari_version="$(bash "$launcher" --version-value)" || return 1
+    write_format2_lock "$output" "$wari_version" "$frankenphp_version" \
+        "$composer_version" "$linux_build"
 }
+
+GENERATOR_LAUNCHER="$UPDATE_TMP/generator-launcher"
+GENERATOR_ARGUMENTS="$UPDATE_TMP/generator-arguments"
+cat >"$GENERATOR_LAUNCHER" <<'GENERATOR_FIXTURE'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$@" >"$WARI_GENERATOR_ARGUMENTS"
+output="$2"
+printf '%s\n' \
+    'lock_version=2' \
+    'wari_version=0.4.0' \
+    'frankenphp_version=1.12.7' \
+    'composer_version=2.8.11' \
+    'linux_build=static' >"$output"
+GENERATOR_FIXTURE
+chmod 755 "$GENERATOR_LAUNCHER"
+WARI_GENERATOR_ARGUMENTS="$GENERATOR_ARGUMENTS" \
+    generate_update_lock "$GENERATOR_LAUNCHER" \
+    "$UPDATE_TMP/generated-update.lock" 1.12.7 2.8.11 static
+assert_contains "$(<"$GENERATOR_ARGUMENTS")" $'--lock-version\n2' \
+    'dependency update explicitly requests lock format 2'
+WARI_GENERATOR_ARGUMENTS="$GENERATOR_ARGUMENTS" \
+    generate_self_update_lock "$GENERATOR_LAUNCHER" \
+    "$UPDATE_TMP/generated-self-update.lock" 1.12.7 2.8.11 static
+assert_contains "$(<"$GENERATOR_ARGUMENTS")" $'--lock-version\n2' \
+    'self-update explicitly requests lock format 2'
 
 PROJECT="$UPDATE_TMP/project"
 make_pair "$PROJECT"
@@ -67,12 +91,22 @@ assert_contains "$(<"$PROJECT/wari.lock")" 'frankenphp_version=1.13.0' \
     'dependency update publishes the exact FrankenPHP selection'
 assert_contains "$(<"$PROJECT/wari.lock")" 'composer_version=2.10.3' \
     'an omitted Composer version resolves latest stable'
+assert_eq 'lock_version=2' "$(sed -n '1p' "$PROJECT/wari.lock")" \
+    'dependency update migrates a format 1 project lock to format 2'
+assert_not_contains "$(<"$PROJECT/wari.lock")" '_sha' \
+    'migrated dependency lock contains no checksum keys'
 assert_eq $'1.13.0\t\tstatic' "$(<"$UPDATE_TMP/update-arguments")" \
     'dependency update forwards one exact version and preserves Linux build'
 assert_eq 'local runtime' "$(<"$PROJECT/.wari/marker")" \
     'dependency update leaves the local runtime untouched'
 assert_contains "$UPDATE_OUTPUT" './wari setup' \
     'dependency update keeps runtime replacement explicit'
+assert_contains "$UPDATE_OUTPUT" '+ WARI DEPENDENCY UPDATE' \
+    'dependency update starts with a retro header'
+assert_contains "$UPDATE_OUTPUT" '[ OK ] FrankenPHP' \
+    'dependency update reports the selected FrankenPHP transition'
+assert_contains "$UPDATE_OUTPUT" '+ UPDATED' \
+    'dependency update separates its completion state'
 
 GNU_PROJECT="$UPDATE_TMP/gnu-project"
 make_pair "$GNU_PROJECT"
@@ -86,7 +120,7 @@ assert_eq $'\t2.9.0\tgnu' "$(<"$UPDATE_TMP/gnu-arguments")" \
     'dependency update forwards Composer and explicit GNU override'
 
 NOOP_PROJECT="$UPDATE_TMP/noop"
-make_pair "$NOOP_PROJECT"
+make_pair "$NOOP_PROJECT" 2
 NOOP_INODE_BEFORE="$(ls -di "$NOOP_PROJECT/wari.lock" | awk '{print $1}')"
 generate_update_lock() { cp "$NOOP_PROJECT/wari.lock" "$2"; }
 WARI_PROJECT_ROOT="$NOOP_PROJECT" WARI_LAUNCHER="$NOOP_PROJECT/wari" \
@@ -112,17 +146,19 @@ assert_eq '0' "$DECLINE_STATUS" 'declining dependency update is a successful no-
 assert_eq "$DECLINE_BEFORE" "$(calculate_checksum sha256 "$DECLINE_PROJECT/wari.lock")" \
     'declining dependency update preserves the lock'
 
-MODIFIED_PROJECT="$UPDATE_TMP/modified"
+MODIFIED_PROJECT="$UPDATE_TMP/version-mismatch"
 make_pair "$MODIFIED_PROJECT"
-printf '# local edit\n' >>"$MODIFIED_PROJECT/wari"
+sed "s/^WARI_VERSION='[^']*'/WARI_VERSION='9.9.9'/" \
+    "$CORE_DIR/wari" >"$MODIFIED_PROJECT/wari"
+chmod 755 "$MODIFIED_PROJECT/wari"
 NETWORK_MARKER="$UPDATE_TMP/network-called"
 generate_update_lock() { : >"$NETWORK_MARKER"; return 1; }
-assert_fails 'dependency update refuses a locally modified launcher' \
+assert_fails 'dependency update refuses a mismatched launcher version' \
     env WARI_PROJECT_ROOT="$MODIFIED_PROJECT" \
     WARI_LAUNCHER="$MODIFIED_PROJECT/wari" bash -c \
     'source "$1/wari"; update_main --yes' _ "$MODIFIED_PROJECT"
 assert_eq '0' "$(test ! -e "$NETWORK_MARKER"; printf '%s' "$?")" \
-    'modified launcher is rejected before metadata resolution'
+    'mismatched launcher version is rejected before metadata resolution'
 
 assert_fails 'dependency update rejects a missing FrankenPHP value' \
     update_main --frankenphp
@@ -143,13 +179,7 @@ download_file() {
     cp "$SELF_CANDIDATE" "$2"
 }
 generate_self_update_lock() {
-    local launcher="$1" output="$2"
-    local launcher_sha
-    launcher_sha="$(calculate_checksum sha256 "$launcher")"
-    sed \
-        -e 's/^wari_version=.*/wari_version=0.3.0/' \
-        -e "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-        "$CORE_DIR/wari.lock" >"$output"
+    write_format2_lock "$2" 0.3.0 1.12.7 2.8.11 static
 }
 set +e
 SELF_OUTPUT="$(WARI_PROJECT_ROOT="$SELF_PROJECT" \
@@ -166,6 +196,10 @@ if [[ "$SELF_STATUS" -eq 0 ]]; then
         'self-update preserves the exact FrankenPHP selection'
     assert_contains "$(<"$SELF_PROJECT/wari.lock")" 'composer_version=2.8.11' \
         'self-update preserves the exact Composer selection'
+    assert_eq 'lock_version=2' "$(sed -n '1p' "$SELF_PROJECT/wari.lock")" \
+        'self-update publishes the current project lock format'
+    assert_not_contains "$(<"$SELF_PROJECT/wari.lock")" '_sha' \
+        'self-update lock contains no checksum keys'
 fi
 assert_eq 'https://raw.githubusercontent.com/wednesdaymoonlab/wari/v0.3.0/wari' \
     "$(<"$UPDATE_TMP/self-url")" \
@@ -174,6 +208,12 @@ assert_eq 'self runtime' "$(<"$SELF_PROJECT/.wari/marker")" \
     'self-update leaves the local runtime untouched'
 assert_contains "$SELF_OUTPUT" './wari setup' \
     'self-update keeps runtime refresh explicit'
+assert_contains "$SELF_OUTPUT" '+ WARI SELF-UPDATE' \
+    'self-update starts with a retro header'
+assert_contains "$SELF_OUTPUT" '[ OK ] Wari' \
+    'self-update reports the selected Wari transition'
+assert_contains "$SELF_OUTPUT" '+ UPDATED' \
+    'self-update separates its completion state'
 assert_fails 'self-update requires an exact target version' self_update_main
 assert_fails 'self-update rejects prerelease target text' \
     self_update_main 0.3.0-rc1 --yes
@@ -249,11 +289,7 @@ set +e
     WARI_LAUNCHER="$ROLLBACK_PROJECT/wari"
     download_file() { cp "$SELF_CANDIDATE" "$2"; }
     generate_self_update_lock() {
-        local launcher_sha
-        launcher_sha="$(calculate_checksum sha256 "$1")"
-        sed -e 's/^wari_version=.*/wari_version=0.3.0/' \
-            -e "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-            "$CORE_DIR/wari.lock" >"$2"
+        write_format2_lock "$2" 0.3.0 1.12.7 2.8.11 static
     }
     mv() {
         local source destination
@@ -287,11 +323,7 @@ set +e
     WARI_LAUNCHER="$CHMOD_PROJECT/wari"
     download_file() { cp "$SELF_CANDIDATE" "$2"; }
     generate_self_update_lock() {
-        local launcher_sha
-        launcher_sha="$(calculate_checksum sha256 "$1")"
-        sed -e 's/^wari_version=.*/wari_version=0.3.0/' \
-            -e "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-            "$CORE_DIR/wari.lock" >"$2"
+        write_format2_lock "$2" 0.3.0 1.12.7 2.8.11 static
     }
     chmod() {
         if [[ "${2-}" == "$CHMOD_PROJECT/wari" ]]; then return 74; fi
@@ -315,11 +347,7 @@ set +e
     WARI_LAUNCHER="$SIGNAL_PROJECT/wari"
     download_file() { cp "$SELF_CANDIDATE" "$2"; }
     generate_self_update_lock() {
-        local launcher_sha
-        launcher_sha="$(calculate_checksum sha256 "$1")"
-        sed -e 's/^wari_version=.*/wari_version=0.3.0/' \
-            -e "s/^wari_sha256=.*/wari_sha256=$launcher_sha/" \
-            "$CORE_DIR/wari.lock" >"$2"
+        write_format2_lock "$2" 0.3.0 1.12.7 2.8.11 static
     }
     mv() {
         local source destination

@@ -14,10 +14,26 @@ curl -fsSL https://raw.githubusercontent.com/wednesdaymoonlab/wari/main/install.
 ```
 
 The initializer downloads the portable `wari` launcher from an exact Wari Git
-tag, generates the version/checksum policy in `wari.lock` from official
-FrankenPHP and Composer metadata, and adds a managed block in `.gitignore`.
-It does not download PHP or Composer binaries. `./wari setup` explicitly
-creates the machine-specific runtime in ignored `.wari/`.
+tag, generates the project version lock in `wari.lock`, and adds a managed
+block in `.gitignore`. It does not download PHP or Composer binaries.
+`./wari setup` explicitly creates the machine-specific runtime in ignored
+`.wari/`.
+
+The project lock contains exactly the selected versions and Linux build:
+
+```text
+lock_version=2
+wari_version=0.4.0
+frankenphp_version=1.12.7
+composer_version=2.8.11
+linux_build=static
+```
+
+`wari.lock` guarantees version selection, not byte-for-byte identity if an
+upstream project rebuilds an asset under the same version. During each required
+installation, setup retrieves current integrity metadata from official GitHub
+and Composer endpoints, verifies the downloaded bytes against that metadata,
+and records the verified checksums only in ignored `.wari/manifest.json`.
 
 Commit `wari`, `wari.lock`, and `.gitignore`. Do not commit `.wari/`. Teammates
 on Linux, Intel macOS, and Apple Silicon macOS share the same tracked launcher
@@ -113,6 +129,12 @@ FrankenPHP and Composer downloads show curl's ASCII progress bar when standard
 error is connected to a terminal. CI runs and redirected output stay quiet while
 still reporting download errors and retries.
 
+Wari colors its own interactive help and status messages when their output is
+connected to a terminal. Redirected output stays plain. Set `NO_COLOR=1` or
+`WARI_COLOR=never` to disable color, or `WARI_COLOR=always` to preserve color
+when capturing output. PHP, Composer, FrankenPHP, and generated service
+configuration output is never decorated by Wari.
+
 ## Use
 
 ```bash
@@ -154,15 +176,15 @@ dependencies, Git history, or remotes.
 Update the Wari launcher separately from an exact immutable Git tag:
 
 ```bash
-./wari self-update 0.3.0
+./wari self-update 0.4.0
 git diff -- wari wari.lock
 ./wari setup
 ```
 
 `self-update` preserves the exact locked FrankenPHP and Composer versions,
-refreshes their official checksum metadata, and leaves `.wari/` untouched.
-Both update commands make the existing runtime stale through the changed lock,
-so setup remains an explicit review step.
+changes `wari_version`, and leaves `.wari/` untouched. Both update commands
+make the existing runtime stale through the changed lock, so setup remains an
+explicit review step.
 
 `./wari serve` is a local-development shortcut. It requires `./public`, binds
 only to `127.0.0.1:8000`, and does not accept custom options. Use the transparent
@@ -244,15 +266,24 @@ Symfony, WordPress, CodeIgniter, Slim, and CakePHP with Wari.
 
 Wari downloads only from the official GitHub, FrankenPHP, and Composer hosts.
 The initializer obtains the launcher over HTTPS from an exact semantic-version
-Git tag, validates its embedded version, and records its calculated SHA-256 in
-the generated lock. Protect published version tags from deletion or movement;
-the initial download trust boundary is GitHub HTTPS and repository access
-control, not a separately signed release artifact.
+Git tag and validates its embedded version against `wari_version`. Protect
+published version tags from deletion or movement; the initial download trust
+boundary is GitHub HTTPS and repository access control, not a separately signed
+release artifact.
 
-`wari.lock` pins exact Wari, FrankenPHP, Composer, platform artifact, and
-checksum values. Setup verifies the FrankenPHP artifact, Composer installer,
-and installed Composer PHAR against the committed lock. There is no option to
-skip verification.
+`wari.lock` belongs to the consuming PHP project and pins exact Wari,
+FrankenPHP, and Composer versions plus the Linux build variant. The Wari source
+repository does not ship its own lock. Setup resolves the selected FrankenPHP
+asset digest, Composer installer signature, and locked Composer PHAR checksum
+from their official services in the same run, then fails closed if any
+download differs. There is no option to skip verification.
+
+Wari 0.4 accepts legacy format 1 locks so existing projects can upgrade. Their
+stored artifact hashes are validated as legacy syntax but are not used for new
+downloads. `./wari setup` never changes the tracked lock; `./wari update`
+migrates it to the five-field format 2. A self-update initiated by Wari 0.3.0
+may temporarily leave a valid format 1 lock, which Wari 0.4 can read until the
+next dependency update.
 
 `.wari/.wari-owned` and `.wari/manifest.json` jointly identify a runtime that
 Wari may safely replace or clean up. The manifest records exact versions,
@@ -275,8 +306,10 @@ GitHub CLI is optional and is never installed or invoked by Wari.
   to an unverified download.
 - `.wari/` exists but is not recognized: inspect it manually. Setup refuses to
   move or delete a directory it cannot prove belongs to Wari.
-- `wari` does not match `wari.lock`: restore the tracked pair from Git or review
-  the local edit. Wari will not execute a launcher/lock pair with a bad digest.
+- Wari launcher version does not match `wari.lock`: restore the tracked files
+  from Git or run an intentional `./wari self-update VERSION`. Local launcher
+  bytes are not bound by a checksum in format 2, but its embedded version must
+  equal `wari_version`.
 - `./wari create-project` reports an unsupported entry: move the entry out of
   the directory and retry. New-project creation intentionally accepts only the
   four supported bootstrap entries: `wari`, `wari.lock`, `.wari/`, and
@@ -296,8 +329,9 @@ bash ../../core/install.sh --local-source ../../core
 ```
 
 Publishing a Wari version requires pushing the tested source commit and then a
-matching immutable tag such as `v0.3.0`. A GitHub Release is optional; the
-initializer does not consume Release assets.
+matching immutable tag such as `v0.4.0`. A GitHub Release is optional; the
+initializer does not consume Release assets. The Wari source repository has no
+`wari.lock`; only initialized PHP projects own that file.
 
 Run offline tests:
 
@@ -313,7 +347,8 @@ bash tests/test-create-project.sh
 bash tests/test-service.sh
 ```
 
-Run the opt-in test that downloads real artifacts and starts a loopback server:
+Run the opt-in test that downloads real artifacts, creates a Laravel project,
+runs Artisan, and starts a loopback server:
 
 ```bash
 WARI_RUN_LIVE=1 bash tests/test-live-install.sh

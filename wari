@@ -2,11 +2,108 @@
 
 set -Eeuo pipefail
 
-WARI_VERSION='0.3.0'
+WARI_VERSION='0.4.0'
 WARI_RUNTIME_OWNER='Wari runtime layout 2'
 
+WARI_ANSI_RESET=$'\033[0m'
+WARI_ANSI_BOLD_GREEN=$'\033[1;92m'
+WARI_ANSI_BOLD_CYAN=$'\033[1;96m'
+WARI_ANSI_YELLOW=$'\033[33m'
+WARI_ANSI_DIM=$'\033[2m'
+
+ui_color_enabled() {
+    local file_descriptor="${1:-1}"
+
+    [[ -z "${NO_COLOR+x}" ]] || return 1
+    case "${WARI_COLOR:-auto}" in
+        always) return 0 ;;
+        never) return 1 ;;
+        auto|'') ;;
+        *) ;;
+    esac
+    [[ "${TERM:-}" != dumb && -t "$file_descriptor" ]]
+}
+
+ui_logo() {
+    if ui_color_enabled 1; then
+        printf '%b' "$WARI_ANSI_BOLD_GREEN"
+    fi
+    printf '%s\n' \
+        ' _       __ ___    ____   ____' \
+        '| |     / //   |  / __ \ /  _/' \
+        '| | /| / // /| | / /_/ / / /' \
+        '| |/ |/ // ___ |/ _, _/_/ /' \
+        '|__/|__//_/  |_/_/ |_|/___/'
+    if ui_color_enabled 1; then
+        printf '%b' "$WARI_ANSI_RESET"
+    fi
+}
+
+ui_heading() {
+    if ui_color_enabled 1; then
+        printf '%b%s%b\n' "$WARI_ANSI_BOLD_CYAN" "$1" "$WARI_ANSI_RESET"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+ui_help_command() {
+    local command_name="$1"
+    local description="$2"
+
+    if ui_color_enabled 1; then
+        printf '  %b%-20s%b  %s\n' \
+            "$WARI_ANSI_YELLOW" "$command_name" "$WARI_ANSI_RESET" "$description"
+    else
+        printf '  %-20s  %s\n' "$command_name" "$description"
+    fi
+}
+
+ui_status() {
+    local status="$1"
+    local label="$2"
+    local detail="${3-}"
+    local marker
+    local color
+
+    case "$status" in
+        ok) marker='[ OK ]'; color="$WARI_ANSI_BOLD_GREEN" ;;
+        progress) marker='[ .. ]'; color="$WARI_ANSI_BOLD_CYAN" ;;
+        warn) marker='[WARN]'; color="$WARI_ANSI_YELLOW" ;;
+        fail) marker='[FAIL]'; color=$'\033[1;91m' ;;
+        *) marker='[ -- ]'; color="$WARI_ANSI_DIM" ;;
+    esac
+    if ui_color_enabled 1; then
+        printf '  %b%s%b %-14s %s\n' \
+            "$color" "$marker" "$WARI_ANSI_RESET" "$label" "$detail"
+    else
+        printf '  %s %-14s %s\n' "$marker" "$label" "$detail"
+    fi
+}
+
+ui_banner() {
+    local title="$1"
+
+    if ui_color_enabled 1; then
+        printf '%b+ %-28s ------------------%b\n\n' \
+            "$WARI_ANSI_BOLD_GREEN" "$title" "$WARI_ANSI_RESET"
+    else
+        printf '+ %-28s ------------------\n\n' "$title"
+    fi
+}
+
+ui_error() {
+    local message="$1"
+
+    if ui_color_enabled 2; then
+        printf '  %b[FAIL]%b %s\n' $'\033[1;91m' "$WARI_ANSI_RESET" "$message" >&2
+    else
+        printf '  [FAIL] %s\n' "$message" >&2
+    fi
+}
+
 die() {
-    printf 'Error: %s\n' "$1" >&2
+    ui_error "$1"
     return 1
 }
 
@@ -18,6 +115,7 @@ validate_semver() {
 }
 
 reset_lock_state() {
+    LOCK_KEY_ORDER=''
     LOCK_VERSION=''
     LOCK_WARI_VERSION=''
     LOCK_FRANKENPHP_VERSION=''
@@ -117,7 +215,14 @@ assign_lock_value() {
     esac
 }
 
-validate_complete_lock() {
+validate_lock_versions_and_build() {
+    [[ "$LOCK_WARI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_FRANKENPHP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_COMPOSER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    [[ "$LOCK_LINUX_BUILD" == 'static' || "$LOCK_LINUX_BUILD" == 'gnu' ]] || return 1
+}
+
+validate_format_1_lock() {
     local seen
 
     for seen in \
@@ -139,14 +244,7 @@ validate_complete_lock() {
         fi
     done
 
-    [[ "$LOCK_VERSION" == '1' ]] || {
-        die "unsupported Wari lock version: $LOCK_VERSION"
-        return 1
-    }
-    [[ "$LOCK_WARI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-    [[ "$LOCK_FRANKENPHP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-    [[ "$LOCK_COMPOSER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-    [[ "$LOCK_LINUX_BUILD" == 'static' || "$LOCK_LINUX_BUILD" == 'gnu' ]] || return 1
+    validate_lock_versions_and_build || return 1
     [[ "$LOCK_WARI_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ "$LOCK_COMPOSER_INSTALLER_SHA384" =~ ^[0-9a-f]{96}$ ]] || return 1
     [[ "$LOCK_COMPOSER_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
@@ -154,6 +252,54 @@ validate_complete_lock() {
     [[ "$LOCK_FRANKENPHP_LINUX_ARM64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ "$LOCK_FRANKENPHP_MACOS_X86_64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
     [[ "$LOCK_FRANKENPHP_MACOS_ARM64_SHA256" =~ ^[0-9a-f]{64}$ ]] || return 1
+}
+
+validate_format_2_lock() {
+    local seen
+
+    for seen in \
+        "$SEEN_LOCK_VERSION" \
+        "$SEEN_WARI_VERSION" \
+        "$SEEN_FRANKENPHP_VERSION" \
+        "$SEEN_COMPOSER_VERSION" \
+        "$SEEN_LINUX_BUILD"; do
+        if [[ "$seen" -ne 1 ]]; then
+            die 'Wari lock is missing one or more required keys'
+            return 1
+        fi
+    done
+
+    for seen in \
+        "$SEEN_WARI_SHA256" \
+        "$SEEN_COMPOSER_INSTALLER_SHA384" \
+        "$SEEN_COMPOSER_SHA256" \
+        "$SEEN_FRANKENPHP_LINUX_X86_64_SHA256" \
+        "$SEEN_FRANKENPHP_LINUX_ARM64_SHA256" \
+        "$SEEN_FRANKENPHP_MACOS_X86_64_SHA256" \
+        "$SEEN_FRANKENPHP_MACOS_ARM64_SHA256"; do
+        if [[ "$seen" -ne 0 ]]; then
+            die 'Wari lock format 2 does not allow checksum keys'
+            return 1
+        fi
+    done
+
+    [[ "$LOCK_KEY_ORDER" == \
+        'lock_version,wari_version,frankenphp_version,composer_version,linux_build,' ]] || {
+        die 'Wari lock format 2 keys are not in canonical order'
+        return 1
+    }
+    validate_lock_versions_and_build
+}
+
+validate_complete_lock() {
+    case "$LOCK_VERSION" in
+        1) validate_format_1_lock ;;
+        2) validate_format_2_lock ;;
+        *)
+            die "unsupported Wari lock version: $LOCK_VERSION"
+            return 1
+            ;;
+    esac
 }
 
 parse_lock() {
@@ -176,30 +322,28 @@ parse_lock() {
         key="${line%%=*}"
         value="${line#*=}"
         assign_lock_value "$key" "$value" || return 1
+        LOCK_KEY_ORDER="$LOCK_KEY_ORDER$key,"
     done <"$path"
 
     validate_complete_lock
 }
 
 select_locked_asset() {
+    ASSET_SHA256=''
     case "${PLATFORM_OS:-}/${PLATFORM_ARCH:-}" in
         linux/x86_64)
             ASSET_NAME='frankenphp-linux-x86_64'
             [[ "$LOCK_LINUX_BUILD" == 'static' ]] || ASSET_NAME="$ASSET_NAME-gnu"
-            ASSET_SHA256="$LOCK_FRANKENPHP_LINUX_X86_64_SHA256"
             ;;
         linux/arm64)
             ASSET_NAME='frankenphp-linux-aarch64'
             [[ "$LOCK_LINUX_BUILD" == 'static' ]] || ASSET_NAME="$ASSET_NAME-gnu"
-            ASSET_SHA256="$LOCK_FRANKENPHP_LINUX_ARM64_SHA256"
             ;;
         darwin/x86_64)
             ASSET_NAME='frankenphp-mac-x86_64'
-            ASSET_SHA256="$LOCK_FRANKENPHP_MACOS_X86_64_SHA256"
             ;;
         darwin/arm64)
             ASSET_NAME='frankenphp-mac-arm64'
-            ASSET_SHA256="$LOCK_FRANKENPHP_MACOS_ARM64_SHA256"
             ;;
         *)
             die "unsupported Wari platform: ${PLATFORM_OS:-unknown} ${PLATFORM_ARCH:-unknown}"
@@ -369,21 +513,14 @@ read_frankenphp_release_asset() {
     printf '%s\n' "${digest#sha256:}"
 }
 
-parse_frankenphp_release() {
+parse_frankenphp_release_header() {
     local json_file="$1"
     local expected_version="$2"
-    local linux_build="$3"
     local header
     local tag
     local draft
     local prerelease
-    local linux_x86_asset='frankenphp-linux-x86_64'
-    local linux_arm_asset='frankenphp-linux-aarch64'
 
-    [[ "$linux_build" == static || "$linux_build" == gnu ]] || {
-        die "invalid Linux build: $linux_build"
-        return 1
-    }
     header="$(awk '
         function string_value(line, value) {
             value = line
@@ -420,6 +557,20 @@ parse_frankenphp_release() {
         die 'FrankenPHP release version does not match the requested version'
         return 1
     fi
+}
+
+parse_frankenphp_release() {
+    local json_file="$1"
+    local expected_version="$2"
+    local linux_build="$3"
+    local linux_x86_asset='frankenphp-linux-x86_64'
+    local linux_arm_asset='frankenphp-linux-aarch64'
+
+    [[ "$linux_build" == static || "$linux_build" == gnu ]] || {
+        die "invalid Linux build: $linux_build"
+        return 1
+    }
+    parse_frankenphp_release_header "$json_file" "$expected_version" || return 1
     if [[ "$linux_build" == gnu ]]; then
         linux_x86_asset="$linux_x86_asset-gnu"
         linux_arm_asset="$linux_arm_asset-gnu"
@@ -533,6 +684,7 @@ generate_lock_file() (
     local frankenphp_request="$3"
     local composer_request="$4"
     local linux_build="$5"
+    local generated_lock_version="$6"
     local output_parent output_base output staging release_url release_json
     local composer_versions composer_sha_file installer_sha_file
     local launcher_version launcher_sha composer_sha installer_sha candidate
@@ -569,7 +721,9 @@ generate_lock_file() (
 
     launcher_version="$(bash "$launcher" --version-value)" || return 1
     validate_semver "$launcher_version" || return 1
-    launcher_sha="$(calculate_checksum sha256 "$launcher")" || return 1
+    if [[ "$generated_lock_version" == '1' ]]; then
+        launcher_sha="$(calculate_checksum sha256 "$launcher")" || return 1
+    fi
 
     staging="$(mktemp -d "$output_parent/.wari-lock.XXXXXX")" || return $?
     cleanup_generated_lock() {
@@ -591,7 +745,13 @@ generate_lock_file() (
         release_url='https://api.github.com/repos/php/frankenphp/releases/latest'
     fi
     download_file "$release_url" "$release_json" || return 1
-    parse_frankenphp_release "$release_json" "$frankenphp_request" "$linux_build" || return 1
+    if [[ "$generated_lock_version" == '2' ]]; then
+        parse_frankenphp_release_header "$release_json" \
+            "$frankenphp_request" || return 1
+    else
+        parse_frankenphp_release "$release_json" \
+            "$frankenphp_request" "$linux_build" || return 1
+    fi
 
     if [[ -n "$composer_request" ]]; then
         RESOLVED_COMPOSER_VERSION="$composer_request"
@@ -600,34 +760,46 @@ generate_lock_file() (
         download_file 'https://getcomposer.org/versions' "$composer_versions" || return 1
         parse_composer_latest "$composer_versions" || return 1
     fi
-    composer_sha_file="$staging/composer.sha256sum"
-    download_file \
-        "https://getcomposer.org/download/$RESOLVED_COMPOSER_VERSION/composer.phar.sha256sum" \
-        "$composer_sha_file" || return 1
-    composer_sha="$(read_checksum_value "$composer_sha_file" 64 Composer)" || return 1
-    installer_sha_file="$staging/composer-installer.sig"
-    download_file 'https://composer.github.io/installer.sig' "$installer_sha_file" || return 1
-    installer_sha="$(read_checksum_value "$installer_sha_file" 96 'Composer installer')" || return 1
+    if [[ "$generated_lock_version" == '1' ]]; then
+        composer_sha_file="$staging/composer.sha256sum"
+        download_file \
+            "https://getcomposer.org/download/$RESOLVED_COMPOSER_VERSION/composer.phar.sha256sum" \
+            "$composer_sha_file" || return 1
+        composer_sha="$(read_checksum_value "$composer_sha_file" 64 Composer)" || return 1
+        installer_sha_file="$staging/composer-installer.sig"
+        download_file 'https://composer.github.io/installer.sig' "$installer_sha_file" || return 1
+        installer_sha="$(read_checksum_value "$installer_sha_file" 96 'Composer installer')" || return 1
+    fi
 
     candidate="$staging/wari.lock"
-    {
-        printf 'lock_version=1\n'
-        printf 'wari_version=%s\n' "$launcher_version"
-        printf 'frankenphp_version=%s\n' "$RESOLVED_FRANKENPHP_VERSION"
-        printf 'composer_version=%s\n' "$RESOLVED_COMPOSER_VERSION"
-        printf 'linux_build=%s\n' "$linux_build"
-        printf 'wari_sha256=%s\n' "$launcher_sha"
-        printf 'composer_installer_sha384=%s\n' "$installer_sha"
-        printf 'composer_sha256=%s\n' "$composer_sha"
-        printf 'frankenphp_linux_x86_64_sha256=%s\n' \
-            "$RESOLVED_FRANKENPHP_LINUX_X86_64_SHA256"
-        printf 'frankenphp_linux_arm64_sha256=%s\n' \
-            "$RESOLVED_FRANKENPHP_LINUX_ARM64_SHA256"
-        printf 'frankenphp_macos_x86_64_sha256=%s\n' \
-            "$RESOLVED_FRANKENPHP_MACOS_X86_64_SHA256"
-        printf 'frankenphp_macos_arm64_sha256=%s\n' \
-            "$RESOLVED_FRANKENPHP_MACOS_ARM64_SHA256"
-    } >"$candidate" || return 1
+    if [[ "$generated_lock_version" == '2' ]]; then
+        {
+            printf 'lock_version=2\n'
+            printf 'wari_version=%s\n' "$launcher_version"
+            printf 'frankenphp_version=%s\n' "$RESOLVED_FRANKENPHP_VERSION"
+            printf 'composer_version=%s\n' "$RESOLVED_COMPOSER_VERSION"
+            printf 'linux_build=%s\n' "$linux_build"
+        } >"$candidate" || return 1
+    else
+        {
+            printf 'lock_version=1\n'
+            printf 'wari_version=%s\n' "$launcher_version"
+            printf 'frankenphp_version=%s\n' "$RESOLVED_FRANKENPHP_VERSION"
+            printf 'composer_version=%s\n' "$RESOLVED_COMPOSER_VERSION"
+            printf 'linux_build=%s\n' "$linux_build"
+            printf 'wari_sha256=%s\n' "$launcher_sha"
+            printf 'composer_installer_sha384=%s\n' "$installer_sha"
+            printf 'composer_sha256=%s\n' "$composer_sha"
+            printf 'frankenphp_linux_x86_64_sha256=%s\n' \
+                "$RESOLVED_FRANKENPHP_LINUX_X86_64_SHA256"
+            printf 'frankenphp_linux_arm64_sha256=%s\n' \
+                "$RESOLVED_FRANKENPHP_LINUX_ARM64_SHA256"
+            printf 'frankenphp_macos_x86_64_sha256=%s\n' \
+                "$RESOLVED_FRANKENPHP_MACOS_X86_64_SHA256"
+            printf 'frankenphp_macos_arm64_sha256=%s\n' \
+                "$RESOLVED_FRANKENPHP_MACOS_ARM64_SHA256"
+        } >"$candidate" || return 1
+    fi
     validate_launcher_pair "$launcher" "$candidate" || return 1
     mv -- "$candidate" "$output" || return 1
     rm -rf -- "$staging"
@@ -639,11 +811,13 @@ generate_lock_main() {
     local frankenphp_request=''
     local composer_request=''
     local linux_build='static'
+    local generated_lock_version='1'
     local seen_frankenphp=0 seen_composer=0 seen_linux_build=0
+    local seen_lock_version=0
     local launcher
 
     [[ -n "$output" ]] || {
-        die 'Usage: ./wari --generate-lock OUTPUT [--frankenphp VERSION] [--composer VERSION] [--linux-build static|gnu]'
+        die 'Usage: ./wari --generate-lock OUTPUT [--frankenphp VERSION] [--composer VERSION] [--linux-build static|gnu] [--lock-version 1|2]'
         return 2
     }
     shift
@@ -676,6 +850,20 @@ generate_lock_main() {
                 linux_build="$2"
                 shift 2
                 ;;
+            --lock-version)
+                [[ "$seen_lock_version" -eq 0 && "$#" -ge 2 ]] || {
+                    die 'invalid or duplicate --lock-version option'
+                    return 2
+                }
+                seen_lock_version=1
+                generated_lock_version="$2"
+                [[ "$generated_lock_version" == '1' || \
+                    "$generated_lock_version" == '2' ]] || {
+                    die "unsupported generated lock version: $generated_lock_version"
+                    return 2
+                }
+                shift 2
+                ;;
             *)
                 die "unknown lock generator option: $1"
                 return 2
@@ -684,7 +872,7 @@ generate_lock_main() {
     done
     launcher="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/wari"
     generate_lock_file "$launcher" "$output" "$frankenphp_request" \
-        "$composer_request" "$linux_build"
+        "$composer_request" "$linux_build" "$generated_lock_version"
 }
 
 verify_checksum() {
@@ -695,22 +883,51 @@ verify_checksum() {
 
     actual="$(calculate_checksum "$algorithm" "$file")" || return 1
     if [[ "$actual" != "$expected" ]]; then
-        printf 'Error: %s checksum mismatch.\nExpected: %s\nActual:   %s\n' \
-            "$algorithm" "$expected" "$actual" >&2
+        ui_error "$algorithm checksum mismatch."
+        printf '  Expected: %s\n  Actual:   %s\n' "$expected" "$actual" >&2
         return 1
     fi
+}
+
+resolve_setup_integrity_metadata() {
+    local staging="$1"
+    local release_json="$staging/frankenphp-release.json"
+    local installer_signature="$staging/composer-installer.sig"
+    local composer_checksum="$staging/composer.sha256sum"
+
+    mkdir -p "$staging" || return 1
+    select_locked_asset || return 1
+    download_file \
+        "https://api.github.com/repos/php/frankenphp/releases/tags/v$LOCK_FRANKENPHP_VERSION" \
+        "$release_json" || return 1
+    parse_frankenphp_release_header "$release_json" \
+        "$LOCK_FRANKENPHP_VERSION" || return 1
+    ASSET_SHA256="$(read_frankenphp_release_asset "$release_json" \
+        "$LOCK_FRANKENPHP_VERSION" "$ASSET_NAME")" || return 1
+    ASSET_URL="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
+
+    download_file 'https://composer.github.io/installer.sig' \
+        "$installer_signature" || return 1
+    VERIFIED_COMPOSER_INSTALLER_SHA384="$(read_checksum_value \
+        "$installer_signature" 96 'Composer installer')" || return 1
+
+    download_file \
+        "https://getcomposer.org/download/$LOCK_COMPOSER_VERSION/composer.phar.sha256sum" \
+        "$composer_checksum" || return 1
+    VERIFIED_COMPOSER_SHA256="$(read_checksum_value \
+        "$composer_checksum" 64 Composer)" || return 1
+
+    rm -f -- "$release_json" "$installer_signature" "$composer_checksum" || return 1
 }
 
 install_locked_frankenphp() {
     local staging="$1"
     local runtime_dir="$staging/runtime"
     local download="$runtime_dir/frankenphp.download"
-    local url
 
     mkdir -p "$runtime_dir"
-    select_locked_asset || return 1
-    url="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
-    download_file "$url" "$download" "FrankenPHP $LOCK_FRANKENPHP_VERSION" || return 1
+    download_file "$ASSET_URL" "$download" \
+        "FrankenPHP $LOCK_FRANKENPHP_VERSION" || return 1
     verify_checksum sha256 "$ASSET_SHA256" "$download" || return 1
     mv -- "$download" "$runtime_dir/frankenphp"
     chmod 755 "$runtime_dir/frankenphp"
@@ -744,7 +961,7 @@ install_locked_composer() {
         return 1
     fi
     download_file 'https://getcomposer.org/installer' "$setup" 'Composer installer' || return 1
-    verify_checksum sha384 "$LOCK_COMPOSER_INSTALLER_SHA384" "$setup" || return 1
+    verify_checksum sha384 "$VERIFIED_COMPOSER_INSTALLER_SHA384" "$setup" || return 1
     "$runtime_dir/frankenphp" php-cli "$setup" \
         --quiet \
         "--version=$LOCK_COMPOSER_VERSION" \
@@ -754,7 +971,7 @@ install_locked_composer() {
         die 'Composer installer did not create a regular composer.phar'
         return 1
     fi
-    verify_checksum sha256 "$LOCK_COMPOSER_SHA256" \
+    verify_checksum sha256 "$VERIFIED_COMPOSER_SHA256" \
         "$runtime_dir/composer.phar" || return 1
     output="$(run_composer_version "$runtime_dir/frankenphp" php-cli \
         "$runtime_dir/composer.phar" --version)" || return 1
@@ -780,14 +997,11 @@ write_manifest() {
     local wari_dir="$1"
     local installed_at
     local linux_build_json='null'
-    local asset_url
 
     installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     if [[ "$PLATFORM_OS" == 'linux' ]]; then
         linux_build_json="\"$(json_escape "$LOCK_LINUX_BUILD")\""
     fi
-    asset_url="https://github.com/php/frankenphp/releases/download/v$LOCK_FRANKENPHP_VERSION/$ASSET_NAME"
-
     printf '%s\n' "$WARI_RUNTIME_OWNER" >"$wari_dir/.wari-owned"
     {
         printf '{\n'
@@ -801,9 +1015,12 @@ write_manifest() {
         printf '  "architecture": "%s",\n' "$(json_escape "$PLATFORM_ARCH")"
         printf '  "linux_build": %s,\n' "$linux_build_json"
         printf '  "asset": "%s",\n' "$(json_escape "$ASSET_NAME")"
-        printf '  "asset_url": "%s",\n' "$(json_escape "$asset_url")"
+        printf '  "asset_url": "%s",\n' "$(json_escape "$ASSET_URL")"
         printf '  "asset_sha256": "%s",\n' "$(json_escape "$ASSET_SHA256")"
-        printf '  "composer_sha256": "%s",\n' "$(json_escape "$LOCK_COMPOSER_SHA256")"
+        printf '  "composer_installer_sha384": "%s",\n' \
+            "$(json_escape "$VERIFIED_COMPOSER_INSTALLER_SHA384")"
+        printf '  "composer_sha256": "%s",\n' \
+            "$(json_escape "$VERIFIED_COMPOSER_SHA256")"
         printf '  "checksum_verified": true,\n'
         printf '  "slsa_verified": false,\n'
         printf '  "installed_at": "%s"\n' "$(json_escape "$installed_at")"
@@ -956,9 +1173,14 @@ setup_main() (
     fi
     LOCK_SHA256="$(lock_digest "$WARI_PROJECT_ROOT/wari.lock")" || return 1
 
+    local platform_label="$PLATFORM_OS"
+    [[ "$platform_label" != darwin ]] || platform_label='macOS'
+    ui_banner 'WARI RUNTIME SETUP'
+    ui_status ok Platform "$platform_label $PLATFORM_ARCH"
+
     if [[ -e "$WARI_RUNTIME_DIR" || -L "$WARI_RUNTIME_DIR" ]]; then
         if validate_runtime "$WARI_PROJECT_ROOT" >/dev/null 2>&1; then
-            printf 'Wari runtime is already ready.\n'
+            ui_status ok Runtime 'already ready'
             return 0
         fi
         if ! is_recognized_runtime "$WARI_RUNTIME_DIR"; then
@@ -999,12 +1221,20 @@ setup_main() (
     printf '%s\n' "$$" >"$SETUP_LOCK/pid" || return 1
     SETUP_STAGING="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-install.XXXXXX")" || return $?
 
+    resolve_setup_integrity_metadata "$SETUP_STAGING" || return 1
+    ui_status progress FrankenPHP "installing $LOCK_FRANKENPHP_VERSION"
     install_locked_frankenphp "$SETUP_STAGING" || return 1
+    ui_status progress Composer "installing $LOCK_COMPOSER_VERSION"
     install_locked_composer "$SETUP_STAGING" || return 1
     generate_wrappers "$SETUP_STAGING" || return 1
     detect_installed_versions "$SETUP_STAGING" || return 1
+    ui_status ok FrankenPHP "$INSTALLED_FRANKENPHP_VERSION"
+    ui_status ok Composer "$INSTALLED_COMPOSER_VERSION"
+    ui_status ok PHP "$INSTALLED_PHP_VERSION"
     write_manifest "$SETUP_STAGING" || return 1
+    ui_status progress Verification 'running smoke checks'
     run_staged_smoke_checks "$SETUP_STAGING" || return 1
+    ui_status ok Verification passed
 
     if [[ -d "$WARI_RUNTIME_DIR" ]]; then
         RUNTIME_BACKUP="$(mktemp -d "$WARI_PROJECT_ROOT/.wari-backup.XXXXXX")"
@@ -1025,26 +1255,37 @@ setup_main() (
     SETUP_LOCK_OWNED=0
     NEW_RUNTIME_PUBLISHED=0
     trap - EXIT INT TERM HUP
-    printf 'Wari runtime is ready.\n'
+    printf '\n'
+    ui_banner READY
+    printf '  Run: ./wari serve\n'
 )
 
-validate_launcher_pair() {
+validate_launcher_lock_version() {
     local launcher="$1"
     local lock="$2"
-    local actual_sha
     local reported_version
 
     parse_lock "$lock" || return 1
-    actual_sha="$(calculate_checksum sha256 "$launcher")" || return 1
-    [[ "$actual_sha" == "$LOCK_WARI_SHA256" ]] || {
-        die 'tracked Wari launcher has local modifications or does not match wari.lock'
-        return 1
-    }
     reported_version="$(bash "$launcher" --version-value)" || return 1
     [[ "$reported_version" == "$LOCK_WARI_VERSION" ]] || {
         die 'Wari launcher version does not match wari.lock'
         return 1
     }
+}
+
+validate_launcher_pair() {
+    validate_launcher_lock_version "$@"
+}
+
+require_project_lock() {
+    local project_root="$1"
+    local launcher="$2"
+
+    if [[ ! -f "$project_root/wari.lock" || -L "$project_root/wari.lock" ]]; then
+        die 'wari.lock is missing; initialize Wari in this PHP project with install.sh'
+        return 1
+    fi
+    validate_launcher_lock_version "$launcher" "$project_root/wari.lock"
 }
 
 generate_update_lock() {
@@ -1055,7 +1296,11 @@ generate_update_lock() {
     local linux_build="$5"
     local -a arguments
 
-    arguments=(--generate-lock "$output" --linux-build "$linux_build")
+    arguments=(
+        --generate-lock "$output"
+        --linux-build "$linux_build"
+        --lock-version 2
+    )
     [[ -z "$frankenphp_request" ]] || arguments+=(--frankenphp "$frankenphp_request")
     [[ -z "$composer_request" ]] || arguments+=(--composer "$composer_request")
     bash "$launcher" "${arguments[@]}"
@@ -1067,8 +1312,8 @@ update_main() (
     local composer_request=''
     local linux_build_request=''
     local seen_frankenphp=0 seen_composer=0 seen_linux_build=0
-    local current_wari_version current_wari_sha current_frankenphp current_composer
-    local current_linux_build candidate_wari_version candidate_wari_sha
+    local current_wari_version current_frankenphp current_composer
+    local current_linux_build candidate_wari_version
     local candidate_frankenphp candidate_composer candidate_linux_build
     local staging confirm_status
     local lock_published=0 restore_failed=0
@@ -1114,7 +1359,6 @@ update_main() (
     WARI_LAUNCHER="${WARI_LAUNCHER:-$WARI_PROJECT_ROOT/wari}"
     validate_launcher_pair "$WARI_LAUNCHER" "$WARI_PROJECT_ROOT/wari.lock" || return 1
     current_wari_version="$LOCK_WARI_VERSION"
-    current_wari_sha="$LOCK_WARI_SHA256"
     current_frankenphp="$LOCK_FRANKENPHP_VERSION"
     current_composer="$LOCK_COMPOSER_VERSION"
     current_linux_build="$LOCK_LINUX_BUILD"
@@ -1132,8 +1376,7 @@ update_main() (
                 "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
             esac
         else
-            printf 'Error: dependency update rollback failed; recovery files remain in %s\n' \
-                "$staging" >&2
+            ui_error "dependency update rollback failed; recovery files remain in $staging"
         fi
         exit "$status"
     }
@@ -1148,24 +1391,22 @@ update_main() (
         "$frankenphp_request" "$composer_request" "$linux_build_request" || return 1
     validate_launcher_pair "$staging/wari" "$staging/wari.lock" || return 1
     candidate_wari_version="$LOCK_WARI_VERSION"
-    candidate_wari_sha="$LOCK_WARI_SHA256"
     candidate_frankenphp="$LOCK_FRANKENPHP_VERSION"
     candidate_composer="$LOCK_COMPOSER_VERSION"
     candidate_linux_build="$LOCK_LINUX_BUILD"
-    [[ "$candidate_wari_version" == "$current_wari_version" &&
-        "$candidate_wari_sha" == "$current_wari_sha" ]] || {
+    [[ "$candidate_wari_version" == "$current_wari_version" ]] || {
         die 'dependency update attempted to change the Wari launcher identity'
         return 1
     }
-    printf '%s\n' \
-        "FrankenPHP: $current_frankenphp -> $candidate_frankenphp" \
-        "Composer:   $current_composer -> $candidate_composer" \
-        "Linux build: $current_linux_build -> $candidate_linux_build"
+    ui_banner 'WARI DEPENDENCY UPDATE'
+    ui_status ok FrankenPHP "$current_frankenphp -> $candidate_frankenphp"
+    ui_status ok Composer "$current_composer -> $candidate_composer"
+    ui_status ok 'Linux build' "$current_linux_build -> $candidate_linux_build"
 
     if cmp -s "$WARI_PROJECT_ROOT/wari.lock" "$staging/wari.lock"; then
         rm -rf -- "$staging"
         trap - EXIT INT TERM HUP
-        printf 'Wari dependency lock is already current.\n'
+        ui_status ok Lock 'already current'
         return 0
     fi
     if [[ "$assume_yes" -ne 1 ]]; then
@@ -1191,7 +1432,9 @@ update_main() (
     rm -rf -- "$staging"
     lock_published=0
     trap - EXIT INT TERM HUP
-    printf '%s\n' '' 'Review wari.lock, then run:' '  ./wari setup'
+    printf '\n'
+    ui_banner UPDATED
+    printf '  Review wari.lock, then run:\n    ./wari setup\n'
 )
 
 fetch_tagged_wari_launcher() {
@@ -1215,7 +1458,8 @@ generate_self_update_lock() {
     bash "$launcher" --generate-lock "$output" \
         --frankenphp "$frankenphp_version" \
         --composer "$composer_version" \
-        --linux-build "$linux_build"
+        --linux-build "$linux_build" \
+        --lock-version 2
 }
 
 self_update_main() (
@@ -1265,8 +1509,7 @@ self_update_main() (
                 "$WARI_PROJECT_ROOT"/.wari-update.?*) rm -rf -- "$staging" ;;
             esac
         else
-            printf 'Error: self-update rollback failed; recovery files remain in %s\n' \
-                "$staging" >&2
+            ui_error "self-update rollback failed; recovery files remain in $staging"
         fi
         exit "$status"
     }
@@ -1284,7 +1527,8 @@ self_update_main() (
     generate_self_update_lock "$staging/wari" "$staging/wari.lock" \
         "$current_frankenphp" "$current_composer" "$current_linux_build" || return 1
     validate_launcher_pair "$staging/wari" "$staging/wari.lock" || return 1
-    printf 'Wari self-update: %s -> %s\n' "$current_version" "$candidate_version"
+    ui_banner 'WARI SELF-UPDATE'
+    ui_status ok Wari "$current_version -> $candidate_version"
 
     if [[ "$assume_yes" -ne 1 ]]; then
         if confirm_tracked_change 'Update this project Wari launcher and lock?'; then :; else
@@ -1320,7 +1564,9 @@ self_update_main() (
     launcher_published=0
     lock_published=0
     trap - EXIT INT TERM HUP
-    printf '%s\n' '' 'Review wari and wari.lock, then run:' '  ./wari setup'
+    printf '\n'
+    ui_banner UPDATED
+    printf '  Review wari and wari.lock, then run:\n    ./wari setup\n'
 )
 
 generate_wrappers() {
@@ -1537,8 +1783,46 @@ create_project_usage() {
         'Use --yes to accept Wari confirmation in automation.'
 }
 
+CREATE_PROJECT_ANSI_RESET=$'\033[0m'
+CREATE_PROJECT_ANSI_GREEN=$'\033[1;92m'
+
+create_project_color_enabled() {
+    local file_descriptor="${1:-1}"
+
+    [[ -z "${NO_COLOR+x}" ]] || return 1
+    case "${WARI_COLOR:-auto}" in
+        always) return 0 ;;
+        never) return 1 ;;
+    esac
+    [[ "${TERM:-}" != dumb && -t "$file_descriptor" ]]
+}
+
+create_project_banner() {
+    if create_project_color_enabled; then
+        printf '%b' "$CREATE_PROJECT_ANSI_GREEN"
+    fi
+    printf '+ %-28s ------------------\n' "$1"
+    if create_project_color_enabled; then
+        printf '%b' "$CREATE_PROJECT_ANSI_RESET"
+    fi
+}
+
+create_project_status() {
+    if create_project_color_enabled; then
+        printf '  %b[ OK ]%b %-14s %s\n' \
+            "$CREATE_PROJECT_ANSI_GREEN" "$CREATE_PROJECT_ANSI_RESET" "$1" "$2"
+    else
+        printf '  [ OK ] %-14s %s\n' "$1" "$2"
+    fi
+}
+
 create_project_error() {
-    printf 'Error: %s\n' "$1" >&2
+    if create_project_color_enabled 2; then
+        printf '  %b[FAIL]%b %s\n' \
+            $'\033[1;91m' "$CREATE_PROJECT_ANSI_RESET" "$1" >&2
+    else
+        printf '  [FAIL] %s\n' "$1" >&2
+    fi
 }
 
 STAGING_DIR=''
@@ -1861,12 +2145,12 @@ create_project_main() {
     CREATE_PROJECT_COMPLETE=1
     trap - EXIT INT TERM
 
-    printf '%s\n\n  %s\n\n%s\n%s\n%s\n' \
-        'Composer project created successfully in:' \
-        "$PROJECT_ROOT" \
-        'Wari is ready:' \
-        '  ./wari php --version' \
-        '  ./wari composer --version'
+    create_project_banner 'PROJECT CREATED'
+    printf '\n'
+    create_project_status Location "$PROJECT_ROOT"
+    printf '\n'
+    create_project_banner READY
+    printf '\n  ./wari php --version\n  ./wari composer --version\n'
 }
 
 if [[ -n "${WARI_PROJECT_ROOT:-}" ]]; then
@@ -2696,28 +2980,50 @@ service_main() {
 }
 
 launcher_usage() {
-    printf '%s\n' \
-        'Usage: ./wari <command> [arguments]' \
-        '' \
-        'Commands:' \
-        '  setup           Install or refresh the local runtime' \
-        '  update          Update locked FrankenPHP and Composer dependencies' \
-        '  self-update VERSION  Update Wari from an exact Git tag' \
-        '  php              Run project-local PHP' \
-        '  composer         Run project-local Composer' \
-        '  create-project   Create a Composer project in this directory' \
-        '  serve            Serve ./public at http://127.0.0.1:8000' \
-        '  frankenphp       Run the bundled FrankenPHP binary' \
-        '  service          Generate production service configuration' \
-        '  help             Show this help'
+    ui_logo
+    if ui_color_enabled 1; then
+        printf '%b%33s%b\n\n' "$WARI_ANSI_DIM" "v$WARI_VERSION" "$WARI_ANSI_RESET"
+    else
+        printf '%33s\n\n' "v$WARI_VERSION"
+    fi
+    ui_heading 'PROJECT-LOCAL PHP RUNTIME'
+    printf '\n'
+    ui_heading 'USAGE'
+    printf '  Usage: ./wari <command> [arguments]\n\n'
+    ui_heading 'DEVELOPMENT'
+    ui_help_command setup 'Install or refresh the local runtime'
+    ui_help_command serve 'Serve ./public at http://127.0.0.1:8000'
+    ui_help_command create-project 'Create a Composer project in this directory'
+    printf '\n'
+    ui_heading 'RUNTIME'
+    ui_help_command php 'Run project-local PHP'
+    ui_help_command composer 'Run project-local Composer'
+    ui_help_command frankenphp 'Run the bundled FrankenPHP binary'
+    printf '\n'
+    ui_heading 'MAINTENANCE'
+    ui_help_command update 'Update locked FrankenPHP and Composer dependencies'
+    ui_help_command 'self-update VERSION' 'Update Wari from an exact Git tag'
+    ui_help_command service 'Generate production service configuration'
+    printf '\n'
+    ui_help_command help 'Show this help'
+    printf '\nRun ./wari <command> --help for command details.\n'
 }
 
 runtime_not_ready() {
-    printf '%s\n' \
-        'Error: Wari runtime is not ready for this project.' \
-        '' \
-        'Run:' \
-        '  ./wari setup' >&2
+    local diagnosis="${1-}"
+
+    if ui_color_enabled 2; then
+        printf '%b+ WARI FAILED --------------------------------%b\n\n' \
+            $'\033[1;91m' "$WARI_ANSI_RESET" >&2
+    else
+        printf '+ WARI FAILED --------------------------------\n\n' >&2
+    fi
+    if [[ -n "$diagnosis" ]]; then
+        printf '%s\n' "$diagnosis" >&2
+    else
+        ui_error 'Wari runtime is not ready for this project.'
+    fi
+    printf '\n  Fix:\n    ./wari setup\n' >&2
     return 1
 }
 
@@ -2872,12 +3178,13 @@ validate_runtime() {
 
 dispatch_runtime() {
     local command_name="$1"
+    local validation_output
     shift
 
-    validate_runtime "$WARI_PROJECT_ROOT" || {
-        runtime_not_ready
+    if ! validation_output="$(validate_runtime "$WARI_PROJECT_ROOT" 2>&1)"; then
+        runtime_not_ready "$validation_output"
         return 1
-    }
+    fi
     if [[ ! -x "$WARI_RUNTIME_DIR/$command_name" ]]; then
         runtime_not_ready
         return 1
@@ -2887,6 +3194,8 @@ dispatch_runtime() {
 }
 
 launcher_main() {
+    local validation_output
+
     WARI_PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     WARI_RUNTIME_DIR="$WARI_PROJECT_ROOT/.wari"
     export WARI_PROJECT_ROOT WARI_RUNTIME_DIR
@@ -2905,12 +3214,21 @@ launcher_main() {
         generate_lock_main "$@"
         return
     fi
-    validate_launcher_pair "$WARI_PROJECT_ROOT/wari" \
-        "$WARI_PROJECT_ROOT/wari.lock" || return 1
 
     case "${1-}" in
-        ''|help|--help|-h) launcher_usage ;;
-        --version) printf 'Wari %s\n' "$WARI_VERSION" ;;
+        ''|help|--help|-h)
+            launcher_usage
+            return
+            ;;
+        --version)
+            printf 'Wari %s\n' "$WARI_VERSION"
+            return
+            ;;
+    esac
+
+    require_project_lock "$WARI_PROJECT_ROOT" "$WARI_PROJECT_ROOT/wari" || return 1
+
+    case "${1-}" in
         setup)
             shift
             setup_main "$@"
@@ -2929,10 +3247,10 @@ launcher_main() {
                 service_main "$@"
                 return
             fi
-            validate_runtime "$WARI_PROJECT_ROOT" || {
-                runtime_not_ready
+            if ! validation_output="$(validate_runtime "$WARI_PROJECT_ROOT" 2>&1)"; then
+                runtime_not_ready "$validation_output"
                 return 1
-            }
+            fi
             service_main "$@"
             ;;
         php|composer|create-project|serve|frankenphp)

@@ -69,7 +69,8 @@ main() (
     bash "$core_dir/wari" --generate-lock "$temporary/wari.lock" \
         --frankenphp "$frankenphp_version" \
         --composer "$composer_version" \
-        --linux-build "$linux_build" || return 1
+        --linux-build "$linux_build" \
+        --lock-version 2 || return 1
     command cat "$temporary/wari.lock"
 )
 

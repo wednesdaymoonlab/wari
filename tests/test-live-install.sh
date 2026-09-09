@@ -42,8 +42,8 @@ case "${WARI_LINUX_BUILD:-static}" in
     *) printf 'Invalid WARI_LINUX_BUILD: %s\n' "$WARI_LINUX_BUILD" >&2; exit 2 ;;
 esac
 
-LOCK_FRANKENPHP_VERSION="$(awk -F= '$1 == "frankenphp_version" { print $2 }' "$CORE_DIR/wari.lock")"
-LOCK_COMPOSER_VERSION="$(awk -F= '$1 == "composer_version" { print $2 }' "$CORE_DIR/wari.lock")"
+LOCK_FRANKENPHP_VERSION="${WARI_TEST_FRANKENPHP_VERSION:-1.12.7}"
+LOCK_COMPOSER_VERSION="${WARI_TEST_COMPOSER_VERSION:-2.8.11}"
 
 if curl --silent --output /dev/null --max-time 1 'http://127.0.0.1:8000/' 2>/dev/null; then
     printf 'Port 8000 is already occupied; live test cannot safely run.\n' >&2
@@ -106,30 +106,33 @@ if [[ "$("$PROJECT/wari" php -r 'echo $argv[1];' 'wari-eval-ok')" != 'wari-eval-
     exit 1
 fi
 
-CREATE_PROJECT="$LIVE_ROOT/create project"
-mkdir -p "$CREATE_PROJECT"
-cp -R "$PROJECT/.wari" "$CREATE_PROJECT/.wari"
-cp "$PROJECT/wari" "$CREATE_PROJECT/wari"
-cp "$PROJECT/wari.lock" "$CREATE_PROJECT/wari.lock"
-cp "$PROJECT/.gitignore" "$CREATE_PROJECT/.gitignore"
-chmod 755 "$CREATE_PROJECT/wari"
+LARAVEL_PROJECT="$LIVE_ROOT/laravel project"
+mkdir -p "$LARAVEL_PROJECT"
+cp -R "$PROJECT/.wari" "$LARAVEL_PROJECT/.wari"
+cp "$PROJECT/wari" "$LARAVEL_PROJECT/wari"
+cp "$PROJECT/wari.lock" "$LARAVEL_PROJECT/wari.lock"
+cp "$PROJECT/.gitignore" "$LARAVEL_PROJECT/.gitignore"
+chmod 755 "$LARAVEL_PROJECT/wari"
 
 (
-    cd "$CREATE_PROJECT"
-    ./wari create-project --yes composer/hello-world --no-interaction
+    cd "$LARAVEL_PROJECT"
+    ./wari create-project --yes laravel/laravel --no-interaction
+    ./wari php artisan --version
+    ./wari php artisan about --only=environment
 )
 
-if [[ ! -f "$CREATE_PROJECT/composer.json" ||
-    ! -x "$CREATE_PROJECT/wari" ||
-    ! -x "$CREATE_PROJECT/.wari/create-project" ]]; then
-    printf 'Live create-project layout is incomplete.\n' >&2
+if [[ ! -f "$LARAVEL_PROJECT/composer.json" ||
+    ! -f "$LARAVEL_PROJECT/artisan" ||
+    ! -x "$LARAVEL_PROJECT/wari" ||
+    ! -x "$LARAVEL_PROJECT/.wari/create-project" ]]; then
+    printf 'Live Laravel project layout is incomplete.\n' >&2
     exit 1
 fi
 
-"$CREATE_PROJECT/wari" composer validate --no-interaction
-if find "$LIVE_ROOT" -maxdepth 1 -name '.create project.wari-create.*' \
+"$LARAVEL_PROJECT/wari" composer validate --no-interaction
+if find "$LIVE_ROOT" -maxdepth 1 -name '.laravel project.wari-create.*' \
     -print -quit | grep -q .; then
-    printf 'Live create-project left a staging directory behind.\n' >&2
+    printf 'Live Laravel create-project left a staging directory behind.\n' >&2
     exit 1
 fi
 
