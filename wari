@@ -2729,6 +2729,13 @@ escape_systemd_value() {
     printf '%s' "$value"
 }
 
+escape_systemd_path_value() {
+    local value="$1"
+    validate_service_safe_value "$value" 'systemd path' || return 2
+    value="${value//%/%%}"
+    printf '%s' "$value"
+}
+
 render_systemd_command() {
     local argument=''
     local escaped=''
@@ -2793,7 +2800,7 @@ render_systemd_service() {
     local xdg_data=''
     local start_command=''
     local reload_command=''
-    working_directory="$(escape_systemd_value "$WARI_PROJECT_ROOT")" || return 2
+    working_directory="$(escape_systemd_path_value "$WARI_PROJECT_ROOT")" || return 2
     xdg_config="$(escape_systemd_value "$SERVICE_XDG_CONFIG_HOME")" || return 2
     xdg_data="$(escape_systemd_value "$SERVICE_XDG_DATA_HOME")" || return 2
     start_command="$(render_systemd_command "${SERVICE_START_ARGUMENTS[@]}")" || return 2
@@ -2814,7 +2821,7 @@ render_systemd_service() {
         '[Service]' \
         'Type=simple' \
         "User=$SERVICE_USER" \
-        "WorkingDirectory=\"$working_directory\""
+        "WorkingDirectory=$working_directory"
     if [[ "$SERVICE_STATE_DIR" == "/var/lib/wari/$SERVICE_NAME" ]]; then
         printf '%s\n' \
             "StateDirectory=wari/$SERVICE_NAME" \

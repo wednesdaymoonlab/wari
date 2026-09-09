@@ -371,8 +371,8 @@ assert_contains "$SYSTEMD_CLASSIC" '[Service]' \
 assert_contains "$SYSTEMD_CLASSIC" "User=$TEST_USER" \
     'systemd service uses selected account'
 assert_contains "$SYSTEMD_CLASSIC" \
-    "WorkingDirectory=\"${PROJECT//%/%%}\"" \
-    'systemd service escapes physical working directory'
+    "WorkingDirectory=${PROJECT//%/%%}" \
+    'systemd service emits an unquoted absolute working directory'
 assert_contains "$SYSTEMD_CLASSIC" \
     'StateDirectory=wari/project-100-api' \
     'systemd service creates default state directory'
