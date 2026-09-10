@@ -97,7 +97,15 @@ if [[ -e "$PROJECT/.wari/wari" || -L "$PROJECT/.wari/wari" ]]; then
     exit 1
 fi
 
-"$PROJECT/wari" php --version
+mkdir -p "$PROJECT/vendor"
+printf '%s\n' '<?php echo "project-autoload-ran";' >"$PROJECT/vendor/autoload.php"
+php_version_output="$("$PROJECT/wari" php --version)"
+if [[ "$php_version_output" == *'project-autoload-ran'* ]]; then
+    printf 'PHP version command loaded project autoload code.\n' >&2
+    exit 1
+fi
+rm -rf -- "$PROJECT/vendor"
+printf '%s\n' "$php_version_output"
 "$PROJECT/wari" composer --version
 "$PROJECT/wari" frankenphp version
 "$PROJECT/wari" php -m >/dev/null
@@ -119,6 +127,7 @@ chmod 755 "$LARAVEL_PROJECT/wari"
     ./wari create-project --yes laravel/laravel --no-interaction
     ./wari php artisan --version
     ./wari php artisan about --only=environment
+    ./wari php artisan test --list-tests
 )
 
 if [[ ! -f "$LARAVEL_PROJECT/composer.json" ||

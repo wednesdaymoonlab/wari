@@ -1624,6 +1624,53 @@ switch ($mode) {
 }
 WARI_PHP_PROXY
 
+    cat >"$wari_dir/runtime/php-prepend.php" <<'WARI_PHP_PREPEND'
+<?php
+
+declare(strict_types=1);
+
+if (PHP_BINARY !== '' ||
+    ! is_string($wariPhpBinary = getenv('PHP_BINARY')) ||
+    $wariPhpBinary === '') {
+    return;
+}
+
+$wariComposer = realpath(__DIR__.'/composer.phar');
+$wariScript = isset($argv[0]) ? realpath($argv[0]) : false;
+if ($wariComposer !== false && $wariScript === $wariComposer) {
+    return;
+}
+
+$wariProxy = realpath(__DIR__.'/php-proxy.php');
+$wariProxyMode = $argv[1] ?? '';
+if ($wariProxy !== false && $wariScript === $wariProxy &&
+    in_array($wariProxyMode, ['version', 'modules', 'info'], true)) {
+    return;
+}
+
+$wariAutoloader = dirname(__DIR__, 2).'/vendor/autoload.php';
+if (is_file($wariAutoloader)) {
+    require_once $wariAutoloader;
+}
+
+spl_autoload_register(static function (string $class) use ($wariPhpBinary): void {
+    $separator = strrpos($class, '\\');
+    if ($separator === false) {
+        return;
+    }
+
+    $constant = substr($class, 0, $separator).'\\PHP_BINARY';
+    if (! defined($constant)) {
+        define($constant, $wariPhpBinary);
+    }
+}, true, true);
+WARI_PHP_PREPEND
+
+    mkdir -p -- "$wari_dir/runtime/php.d"
+    cat >"$wari_dir/runtime/php.d/wari.ini" <<'WARI_PHP_INI'
+auto_prepend_file="${WARI_RUNTIME_DIR}/runtime/php-prepend.php"
+WARI_PHP_INI
+
     cat >"$wari_dir/php" <<'WARI_PHP'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1631,9 +1678,17 @@ set -Eeuo pipefail
 WARI_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 export PHP_BINARY="$WARI_DIR/php"
+export WARI_RUNTIME_DIR="$WARI_DIR"
 case "$PATH" in
     "$WARI_DIR"|"$WARI_DIR":*) ;;
     *) export PATH="$WARI_DIR:$PATH" ;;
+esac
+
+WARI_PHP_INI_DIR="$WARI_DIR/runtime/php.d"
+case ":${PHP_INI_SCAN_DIR:-}:" in
+    *:"$WARI_PHP_INI_DIR":*) ;;
+    ::) export PHP_INI_SCAN_DIR="$WARI_PHP_INI_DIR" ;;
+    *) export PHP_INI_SCAN_DIR="$WARI_PHP_INI_DIR:$PHP_INI_SCAN_DIR" ;;
 esac
 
 arguments=("$@")
@@ -3172,6 +3227,15 @@ validate_runtime() {
     [[ -f "$runtime_dir/runtime/composer.phar" &&
         ! -L "$runtime_dir/runtime/composer.phar" ]] || {
         die 'Wari runtime is incomplete: Composer PHAR'
+        return 1
+    }
+    [[ -f "$runtime_dir/runtime/php-prepend.php" &&
+        ! -L "$runtime_dir/runtime/php-prepend.php" &&
+        -d "$runtime_dir/runtime/php.d" &&
+        ! -L "$runtime_dir/runtime/php.d" &&
+        -f "$runtime_dir/runtime/php.d/wari.ini" &&
+        ! -L "$runtime_dir/runtime/php.d/wari.ini" ]] || {
+        die 'Wari runtime is incomplete: PHP compatibility bootstrap'
         return 1
     }
 

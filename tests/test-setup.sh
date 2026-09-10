@@ -288,6 +288,10 @@ FAKE_BINARY
     generate_fake_wrappers() {
         local staging="$1"
         local command_name
+        mkdir -p "$staging/runtime/php.d"
+        printf '%s\n' '<?php' >"$staging/runtime/php-prepend.php"
+        printf '%s\n' 'auto_prepend_file=compatibility.php' \
+            >"$staging/runtime/php.d/wari.ini"
         for command_name in php composer create-project serve frankenphp; do
             cat >"$staging/$command_name" <<'FAKE_WRAPPER'
 #!/usr/bin/env bash
@@ -338,6 +342,12 @@ FAKE_WRAPPER
         'setup gives the next development command'
     assert_eq '0' "$(validate_runtime "$INITIAL_PROJECT"; printf '%s' "$?")" \
         'initial setup publishes a runtime matching the lock'
+    mv "$INITIAL_PROJECT/.wari/runtime/php-prepend.php" \
+        "$INITIAL_PROJECT/.wari/runtime/php-prepend.php.missing"
+    assert_fails 'runtime validation rejects a missing PHP compatibility bootstrap' \
+        validate_runtime "$INITIAL_PROJECT"
+    mv "$INITIAL_PROJECT/.wari/runtime/php-prepend.php.missing" \
+        "$INITIAL_PROJECT/.wari/runtime/php-prepend.php"
     assert_eq "$INITIAL_LOCK_BEFORE" \
         "$(checksum_of sha256 "$INITIAL_PROJECT/wari.lock")" \
         'setup leaves the project lock byte-for-byte unchanged'

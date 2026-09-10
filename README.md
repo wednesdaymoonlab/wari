@@ -197,10 +197,24 @@ wrapper for advanced commands:
 
 The dispatcher locates `.wari/` relative to itself, so the whole project
 remains relocatable. The PHP wrapper preserves its caller's working directory,
-sets `PHP_BINARY` to itself, and prepends `.wari/` to `PATH`. Composer package
-scripts and PHP programs that start child PHP processes therefore keep using
-the same project-local runtime and can resolve relative paths such as
-`scripts/task.php`.
+exports itself through the `PHP_BINARY` environment variable, and prepends
+`.wari/` to `PATH`. FrankenPHP's embedded CLI currently leaves PHP's global
+`PHP_BINARY` constant empty. Wari loads a compatibility bootstrap that supplies
+the wrapper as a namespace-local `PHP_BINARY` constant for Composer-autoloaded
+classes, covering tools such as Laravel Boost and Collision that use the
+constant directly. Code using Symfony's `PhpExecutableFinder` resolves the
+exported environment variable normally.
+
+The global `\PHP_BINARY` constant remains empty because only FrankenPHP can set
+it during PHP startup. Global-namespace scripts and manually included
+namespaced files should use `getenv('PHP_BINARY')`, `php` from `PATH`, or an
+executable finder when starting a child PHP process.
+
+Wari puts its generated INI scan directory before an existing
+`PHP_INI_SCAN_DIR`, so later user configuration remains authoritative. If that
+configuration sets `auto_prepend_file`, have the user prepend file require
+`getenv('WARI_RUNTIME_DIR').'/runtime/php-prepend.php'` before its own logic to
+retain Wari's namespaced compatibility behavior.
 
 FrankenPHP `php-cli` does not support every native PHP CLI option. Wari removes
 `-d value` and `-dvalue` arguments so Composer remains compatible. Composer

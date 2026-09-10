@@ -181,8 +181,11 @@ write_runtime_fixture() {
         linux_build_json='"static"'
     fi
 
-    mkdir -p "$project/.wari/runtime"
+    mkdir -p "$project/.wari/runtime/php.d"
     printf '%s\n' 'Wari runtime layout 2' >"$project/.wari/.wari-owned"
+    printf '%s\n' '<?php' >"$project/.wari/runtime/php-prepend.php"
+    printf '%s\n' 'auto_prepend_file=compatibility.php' \
+        >"$project/.wari/runtime/php.d/wari.ini"
     copy_launcher_pair "$project"
     for command_name in php composer create-project serve frankenphp; do
         cat >"$project/.wari/$command_name" <<'FAKE_RUNTIME'

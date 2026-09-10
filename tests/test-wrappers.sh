@@ -36,7 +36,7 @@ printf '%s\n' 'Wari runtime layout 2' >"$WARI/.wari-owned"
     printf '%s\n' '  printf '\''arg%s=<%s>\n'\'' "$index" "$argument" >>"$FAKE_CAPTURE"'
     printf '%s\n' '  index=$((index + 1))'
     printf '%s\n' 'done'
-    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\nxdg_config_home=%s\nxdg_data_home=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" "${XDG_CONFIG_HOME-}" "${XDG_DATA_HOME-}" >>"$FAKE_CAPTURE"'
+    printf '%s\n' 'printf '\''php_binary=%s\npath=%s\nwari_composer_context=%s\nphp_ini_scan_dir=%s\nxdg_config_home=%s\nxdg_data_home=%s\n'\'' "${PHP_BINARY-}" "$PATH" "${WARI_COMPOSER_CONTEXT-}" "${PHP_INI_SCAN_DIR-}" "${XDG_CONFIG_HOME-}" "${XDG_DATA_HOME-}" >>"$FAKE_CAPTURE"'
     printf '%s\n' 'case "${1-}/${2-}/${3-}" in'
     printf '%s\n' '  php-cli/*php-proxy.php/version) printf '\''PHP 8.4.0 (cli)\n'\''; exit 0 ;;'
     printf '%s\n' '  php-cli/*composer.phar/--version)'
@@ -96,6 +96,26 @@ assert_contains "$PHP_CAPTURE" 'arg2=<two words>' 'PHP wrapper preserves spaces'
 assert_contains "$PHP_CAPTURE" 'arg3=<*>' 'PHP wrapper does not expand glob arguments'
 assert_contains "$PHP_CAPTURE" "php_binary=$WARI/php" 'PHP wrapper exports itself as PHP_BINARY for child processes'
 assert_contains "$PHP_CAPTURE" "path=$WARI:" 'PHP wrapper prepends itself to PATH for child processes'
+assert_contains "$PHP_CAPTURE" "php_ini_scan_dir=$WARI/runtime/php.d" \
+    'PHP wrapper enables the Wari PHP compatibility bootstrap'
+
+USER_PHP_INI_DIR="$WRAPPER_TMP/user php config"
+mkdir -p "$USER_PHP_INI_DIR"
+PHP_INI_SCAN_DIR="$USER_PHP_INI_DIR" \
+    FAKE_CAPTURE="$CAPTURE" "$WARI/php" script.php
+CUSTOM_INI_CAPTURE="$(<"$CAPTURE")"
+assert_contains "$CUSTOM_INI_CAPTURE" \
+    "php_ini_scan_dir=$WARI/runtime/php.d:$USER_PHP_INI_DIR" \
+    'PHP wrapper preserves user PHP INI precedence'
+
+if [[ -f "$WARI/runtime/php.d/wari.ini" && ! -L "$WARI/runtime/php.d/wari.ini" &&
+    -f "$WARI/runtime/php-prepend.php" && ! -L "$WARI/runtime/php-prepend.php" ]]; then
+    PHP_COMPATIBILITY_FILES_VALID=1
+else
+    PHP_COMPATIBILITY_FILES_VALID=0
+fi
+assert_eq '1' "$PHP_COMPATIBILITY_FILES_VALID" \
+    'wrapper generator creates regular PHP compatibility files'
 
 FAKE_CAPTURE="$CAPTURE" "$WARI/php" --version
 VERSION_CAPTURE="$(<"$CAPTURE")"
