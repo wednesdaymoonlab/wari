@@ -51,7 +51,7 @@ printf '%s\n' "$@" >"$WARI_GENERATOR_ARGUMENTS"
 output="$2"
 printf '%s\n' \
     'lock_version=2' \
-    'wari_version=0.4.0' \
+    'wari_version=0.4.2' \
     'frankenphp_version=1.12.7' \
     'composer_version=2.8.11' \
     'linux_build=static' >"$output"

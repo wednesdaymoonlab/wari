@@ -2,7 +2,7 @@
 
 set -Eeuo pipefail
 
-WARI_VERSION='0.4.0'
+WARI_VERSION='0.4.2'
 WARI_RUNTIME_OWNER='Wari runtime layout 2'
 
 WARI_ANSI_RESET=$'\033[0m'

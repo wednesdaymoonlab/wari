@@ -10,7 +10,7 @@ source "$TEST_DIR/test-helper.sh"
 # shellcheck source=../install.sh
 source "$CORE_DIR/install.sh"
 
-assert_eq '0.4.0' "$WARI_VERSION" \
+assert_eq '0.4.2' "$WARI_VERSION" \
     'initializer version matches the tracked launcher release'
 
 PIPE_HELP_OUTPUT="$(bash -s -- --help <"$CORE_DIR/install.sh")"
@@ -135,13 +135,13 @@ assert_eq '0' "$LOCAL_STATUS" \
 assert_eq '0' "$(test ! -e "$LOCAL_PROJECT/.wari"; printf '%s' "$?")" \
     'local-source initialization leaves runtime setup explicit'
 if [[ "$LOCAL_STATUS" -eq 0 ]]; then
-    assert_eq 'Wari 0.4.0' "$("$LOCAL_PROJECT/wari" --version)" \
+    assert_eq 'Wari 0.4.2' "$("$LOCAL_PROJECT/wari" --version)" \
         'local-source initialization publishes the working launcher'
     bash "$LOCAL_PROJECT/wari" --validate-pair "$LOCAL_PROJECT/wari.lock"
     assert_eq '0' "$?" 'local-source initialization publishes a valid pair'
     EXPECTED_LOCAL_LOCK="$(printf '%s\n' \
         'lock_version=2' \
-        'wari_version=0.4.0' \
+        'wari_version=0.4.2' \
         'frankenphp_version=1.12.7' \
         'composer_version=2.8.11' \
         'linux_build=static')"

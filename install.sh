@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-WARI_VERSION='0.4.0'
+WARI_VERSION='0.4.2'
 WARI_LEGACY_DISPATCHER_SHA256='e79b82db037f7ee0a0907b27c2a893a53b7677a1ace25a1e6e953ff5aedbac43'
 
 INITIALIZER_ANSI_RESET=$'\033[0m'

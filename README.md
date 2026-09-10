@@ -23,7 +23,7 @@ The project lock contains exactly the selected versions and Linux build:
 
 ```text
 lock_version=2
-wari_version=0.4.0
+wari_version=0.4.2
 frankenphp_version=1.12.7
 composer_version=2.8.11
 linux_build=static
@@ -176,7 +176,7 @@ dependencies, Git history, or remotes.
 Update the Wari launcher separately from an exact immutable Git tag:
 
 ```bash
-./wari self-update 0.4.0
+./wari self-update 0.4.2
 git diff -- wari wari.lock
 ./wari setup
 ```
@@ -343,7 +343,7 @@ bash ../../core/install.sh --local-source ../../core
 ```
 
 Publishing a Wari version requires pushing the tested source commit and then a
-matching immutable tag such as `v0.4.0`. A GitHub Release is optional; the
+matching immutable tag such as `v0.4.2`. A GitHub Release is optional; the
 initializer does not consume Release assets. The Wari source repository has no
 `wari.lock`; only initialized PHP projects own that file.
 

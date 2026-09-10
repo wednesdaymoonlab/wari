@@ -51,7 +51,7 @@ assert_contains "$LOCK_FREE_HELP" 'PROJECT-LOCAL PHP RUNTIME' \
 LOCK_FREE_VERSION="$(cd "$LOCK_FREE_PROJECT" && ./wari --version 2>&1)"
 LOCK_FREE_VERSION_STATUS=$?
 assert_eq '0' "$LOCK_FREE_VERSION_STATUS" 'core version works without wari.lock'
-assert_eq 'Wari 0.4.0' "$LOCK_FREE_VERSION" \
+assert_eq 'Wari 0.4.2' "$LOCK_FREE_VERSION" \
     'lock-free core version reports the executing launcher version'
 
 set +e
@@ -125,7 +125,7 @@ assert_eq '' "$(<"$LAUNCHER_TMP/service-before-setup.out")" \
     'service generation before setup leaves stdout empty'
 
 VERSION_OUTPUT="$(cd "$PROJECT" && ./wari --version)"
-assert_contains "$VERSION_OUTPUT" 'Wari 0.4.0' 'version works before setup'
+assert_contains "$VERSION_OUTPUT" 'Wari 0.4.2' 'version works before setup'
 
 for command_name in php composer serve frankenphp create-project; do
     set +e
@@ -210,7 +210,7 @@ FAKE_RUNTIME
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.4.0",
+  "wari_version": "0.4.2",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",

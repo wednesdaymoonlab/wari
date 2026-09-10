@@ -79,7 +79,7 @@ test_file_sha256() {
 
 write_format2_lock() {
     local path="$1"
-    local wari_version="${2:-0.4.0}"
+    local wari_version="${2:-0.4.2}"
     local frankenphp_version="${3:-1.12.7}"
     local composer_version="${4:-2.8.11}"
     local linux_build="${5:-static}"
@@ -95,7 +95,7 @@ write_format2_lock() {
 write_format1_lock() {
     local path="$1"
     local launcher="$2"
-    local wari_version="${3:-0.4.0}"
+    local wari_version="${3:-0.4.2}"
     local frankenphp_version="${4:-1.12.7}"
     local composer_version="${5:-2.8.11}"
     local linux_build="${6:-static}"

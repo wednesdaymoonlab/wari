@@ -68,7 +68,7 @@ set -e
 assert_eq '0' "$FORMAT2_STATUS" 'accepts a complete canonical format 2 lock'
 if [[ "$FORMAT2_STATUS" -eq 0 ]]; then
     assert_eq '2' "$LOCK_VERSION" 'loads format 2 as the active lock format'
-    assert_eq '0.4.0' "$LOCK_WARI_VERSION" 'loads the format 2 Wari version'
+    assert_eq '0.4.2' "$LOCK_WARI_VERSION" 'loads the format 2 Wari version'
     assert_eq '1.12.7' "$LOCK_FRANKENPHP_VERSION" \
         'loads the format 2 FrankenPHP version'
     assert_eq '2.8.11' "$LOCK_COMPOSER_VERSION" \
@@ -93,7 +93,7 @@ FORMAT2_REORDERED="$LOCK_TMP/format2-reordered.lock"
 printf '%s\n' \
     'lock_version=2' \
     'frankenphp_version=1.12.7' \
-    'wari_version=0.4.0' \
+    'wari_version=0.4.2' \
     'composer_version=2.8.11' \
     'linux_build=static' >"$FORMAT2_REORDERED"
 assert_fails 'format 2 rejects keys outside canonical order' \
@@ -108,7 +108,7 @@ FORMAT2_BLANK="$LOCK_TMP/format2-blank.lock"
 assert_fails 'format 2 rejects blank lines' parse_lock "$FORMAT2_BLANK"
 
 FORMAT2_CONTROL="$LOCK_TMP/format2-control.lock"
-printf 'lock_version=2\nwari_version=0.4.0\r\nfrankenphp_version=1.12.7\ncomposer_version=2.8.11\nlinux_build=static\n' \
+printf 'lock_version=2\nwari_version=0.4.2\r\nfrankenphp_version=1.12.7\ncomposer_version=2.8.11\nlinux_build=static\n' \
     >"$FORMAT2_CONTROL"
 assert_fails 'format 2 rejects control characters' parse_lock "$FORMAT2_CONTROL"
 
@@ -325,7 +325,7 @@ assert_eq '0' "$FORMAT2_GENERATED_STATUS" \
 if [[ "$FORMAT2_GENERATED_STATUS" -eq 0 ]]; then
     EXPECTED_FORMAT2="$(printf '%s\n' \
         'lock_version=2' \
-        'wari_version=0.4.0' \
+        'wari_version=0.4.2' \
         'frankenphp_version=1.12.7' \
         'composer_version=2.8.11' \
         'linux_build=static')"
@@ -486,7 +486,7 @@ FAKE_CURL
     set +e
     PATH="$FAKE_BIN:$PATH" WARI_GENERATOR_RETRY_MARKER="$RETRY_MARKER" \
         WARI_TEST_FIXTURES="$TEST_DIR/fixtures" \
-        bash "$GENERATOR" 0.4.0 1.12.7 2.8.11 static >"$GENERATED_LOCK"
+        bash "$GENERATOR" 0.4.2 1.12.7 2.8.11 static >"$GENERATED_LOCK"
     GENERATOR_STATUS=$?
     set -e
     assert_eq '0' "$GENERATOR_STATUS" \

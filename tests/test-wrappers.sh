@@ -72,7 +72,7 @@ cat >"$WARI/manifest.json" <<EOF
 {
   "layout_version": 2,
   "lock_sha256": "$LOCK_SHA",
-  "wari_version": "0.4.0",
+  "wari_version": "0.4.2",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",

@@ -54,7 +54,7 @@ FAKE_FRANKENPHP
 {
   "layout_version": 2,
   "lock_sha256": "$lock_sha",
-  "wari_version": "0.4.0",
+  "wari_version": "0.4.2",
   "frankenphp_version": "1.12.7",
   "php_version": "8.4.0",
   "composer_version": "2.8.11",
